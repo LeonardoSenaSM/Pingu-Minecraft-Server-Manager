@@ -131,66 +131,6 @@ go vet -buildvcs=false -tags ci ./...
 go test -race -buildvcs=false ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
 ```
 
-## Publicar no GitHub
-
-### 1. Criar o repositório
-
-No GitHub, crie um repositório vazio chamado:
-
-```text
-Pingu-Minecraft-Server-Manager
-```
-
-Não adicione README, `.gitignore` ou licença pela tela do GitHub, pois esses arquivos já devem vir do projeto local.
-
-### 2. Enviar o código
-
-Substitua `SEU_USUARIO` pelo usuário ou organização proprietária do repositório:
-
-```powershell
-git init
-git branch -M main
-git add .
-git commit -m "Publica Pingu Minecraft Server Manager"
-git remote add origin https://github.com/SEU_USUARIO/Pingu-Minecraft-Server-Manager.git
-git push -u origin main
-```
-
-### 3. Criar a primeira Release
-
-O workflow `.github/workflows/release.yml` é disparado automaticamente por uma tag iniciada por `v`:
-
-```powershell
-git tag v3.0.0
-git push origin v3.0.0
-```
-
-O GitHub Actions irá:
-
-1. testar o código;
-2. compilar `pingu.exe` sem janela de terminal;
-3. baixar e incorporar o Temurin Java 25 LTS;
-4. gerar o instalador pelo Inno Setup;
-5. gerar o pacote portátil;
-6. calcular os hashes SHA-256;
-7. publicar tudo automaticamente em **Releases**.
-
-O workflow também pode ser executado manualmente na aba **Actions**, informando a versão desejada.
-
-## Atualização de versão
-
-Para publicar uma nova versão:
-
-```powershell
-git add .
-git commit -m "Prepara versão 3.0.1"
-git push
-git tag v3.0.1
-git push origin v3.0.1
-```
-
-Não reutilize uma tag já publicada. Cada versão deve possuir sua própria tag.
-
 ## Dados do usuário e desinstalação
 
 O instalador utiliza, por padrão:
@@ -362,66 +302,6 @@ go test -buildvcs=false -tags ci ./...
 go vet -buildvcs=false -tags ci ./...
 go test -race -buildvcs=false ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
 ```
-
-## Publishing on GitHub
-
-### 1. Create the repository
-
-Create an empty GitHub repository named:
-
-```text
-Pingu-Minecraft-Server-Manager
-```
-
-Do not add a README, `.gitignore`, or license through the GitHub interface because these files should already be present in the local project.
-
-### 2. Push the source code
-
-Replace `YOUR_USERNAME` with the user or organization that owns the repository:
-
-```powershell
-git init
-git branch -M main
-git add .
-git commit -m "Publish Pingu Minecraft Server Manager"
-git remote add origin https://github.com/YOUR_USERNAME/Pingu-Minecraft-Server-Manager.git
-git push -u origin main
-```
-
-### 3. Create the first Release
-
-The `.github/workflows/release.yml` workflow runs automatically when a tag beginning with `v` is pushed:
-
-```powershell
-git tag v3.0.0
-git push origin v3.0.0
-```
-
-GitHub Actions will:
-
-1. test the source code;
-2. build `pingu.exe` without a terminal window;
-3. download and bundle Eclipse Temurin Java 25 LTS;
-4. generate the installer with Inno Setup;
-5. generate the portable package;
-6. calculate SHA-256 checksums;
-7. publish all files automatically under **Releases**.
-
-The workflow can also be started manually from the **Actions** tab by entering the desired version.
-
-## Updating the version
-
-To publish a new version:
-
-```powershell
-git add .
-git commit -m "Prepare version 3.0.1"
-git push
-git tag v3.0.1
-git push origin v3.0.1
-```
-
-Do not reuse an existing release tag. Every version must have its own tag.
 
 ## User data and uninstallation
 
