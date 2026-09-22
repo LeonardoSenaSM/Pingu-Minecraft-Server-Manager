@@ -16,7 +16,7 @@ O repositório oficial deve usar o nome **`Pingu-Minecraft-Server-Manager`** e o
 
 Não é necessário instalar Go, GCC ou configurar Java manualmente.
 
-1. [Download do Pingu](../../releases/tag/latest).
+1. [Download do Pingu](../../tags).
 2. Baixe **`Pingu-Setup-VERSAO-Windows-x64.exe`**.
 3. Execute o instalador.
 4. Escolha o idioma, confirme a pasta de instalação e os atalhos.
