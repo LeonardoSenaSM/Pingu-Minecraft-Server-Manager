@@ -32,13 +32,11 @@ O instalador inclui:
 
 Na primeira vez em que o usuário clicar em **PLAY**, o próprio Pingu baixa as versões compatíveis e mais recentes do PaperMC, Geyser, Floodgate, Chunky e CoreProtect. Essa etapa precisa de conexão com a internet.
 
-Também é publicada uma versão portátil, **`Pingu-VERSAO-Windows-x64-Portable.zip`**. Basta extrair todo o ZIP e executar `pingu.exe`; a pasta `runtime` deve permanecer ao lado do executável.
-
 ## Java 25 ou superior
 
 O Pingu exige Java **25 ou superior** para iniciar o PaperMC.
 
-- O instalador e o pacote portátil já incluem Java 25 LTS.
+- O instalador já inclui Java 25 LTS.
 - O Pingu procura primeiro `./runtime/bin/java.exe`.
 - Se o runtime incorporado não existir, ele procura um Java instalado no `PATH`.
 - Java 24 ou anterior é recusado com uma mensagem clara na interface.
@@ -111,7 +109,6 @@ Os arquivos finais serão criados em `dist/`:
 ```text
 dist/
 ├── Pingu-Setup-3.0.0-Windows-x64.exe
-├── Pingu-3.0.0-Windows-x64-Portable.zip
 └── SHA256SUMS.txt
 ```
 
@@ -204,13 +201,11 @@ The installer includes:
 
 The first time the user clicks **PLAY**, Pingu automatically downloads the latest compatible versions of PaperMC, Geyser, Floodgate, Chunky, and CoreProtect. An internet connection is required for this step.
 
-A portable package named **`Pingu-VERSION-Windows-x64-Portable.zip`** is also published. Extract the complete ZIP and run `pingu.exe`; the `runtime` directory must remain next to the executable.
-
 ## Java 25 or newer
 
 Pingu requires Java **25 or newer** to start PaperMC.
 
-- The installer and portable package already include Java 25 LTS.
+- The installer already includes Java 25 LTS.
 - Pingu checks `./runtime/bin/java.exe` first.
 - If the bundled runtime is unavailable, Pingu looks for Java in the system `PATH`.
 - Java 24 or older is rejected with a clear message in the interface.
@@ -283,7 +278,6 @@ The final files will be created in `dist/`:
 ```text
 dist/
 ├── Pingu-Setup-3.0.0-Windows-x64.exe
-├── Pingu-3.0.0-Windows-x64-Portable.zip
 └── SHA256SUMS.txt
 ```
 

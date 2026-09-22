@@ -1,0 +1,12 @@
+# Keep generated Git tag archives clean even if an old archive was committed.
+*.zip export-ignore
+*.tar export-ignore
+*.tar.gz export-ignore
+
+# Runtime and generated application data never belong in source archives.
+/dist export-ignore
+/build export-ignore
+/release export-ignore
+/runtime export-ignore
+/jre export-ignore
+/server export-ignore

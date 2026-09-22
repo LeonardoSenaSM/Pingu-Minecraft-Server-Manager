@@ -49,20 +49,17 @@ jobs:
           name: Pingu-Windows-x64
           path: |
             dist/Pingu-Setup-*.exe
-            dist/Pingu-*-Portable.zip
             dist/SHA256SUMS.txt
 
       - name: Attest release provenance
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: |
-            dist/Pingu-Setup-*.exe
-            dist/Pingu-*-Portable.zip
+          subject-path: dist/Pingu-Setup-*.exe
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/Pingu-Setup-*.exe dist/Pingu-*-Portable.zip dist/SHA256SUMS.txt --verify-tag --generate-notes --title "Pingu ${{ github.ref_name }}"
+        run: gh release create "${{ github.ref_name }}" dist/Pingu-Setup-*.exe dist/SHA256SUMS.txt --verify-tag --generate-notes --title "Pingu ${{ github.ref_name }}"
