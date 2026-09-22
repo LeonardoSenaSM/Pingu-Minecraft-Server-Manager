@@ -1,0 +1,62 @@
+# Build and release outputs
+/bin/
+/build/
+/dist/
+/release/
+/installer/Output/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.zip
+
+# Bundled Java runtime
+/runtime/
+/jre/
+
+# Pingu-generated server data, worlds, plugins and logs
+/server/
+*.log
+logs/
+crash-reports/
+
+# Go-generated files
+*.test
+*.out
+*.prof
+coverage.txt
+coverage.html
+go.work
+go.work.sum
+/vendor/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
