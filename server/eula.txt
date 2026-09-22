@@ -1,0 +1,2 @@
+# Gerado pelo MineServer
+eula=true
