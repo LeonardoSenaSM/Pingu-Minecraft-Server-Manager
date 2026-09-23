@@ -6,7 +6,7 @@ on:
       version:
         description: Version without the v prefix
         required: true
-        default: 1.0.0
+        default: 3.0.0
   push:
     tags:
       - "v*"
@@ -19,6 +19,10 @@ permissions:
 jobs:
   windows-release:
     runs-on: windows-latest
+    env:
+      CGO_ENABLED: "1"
+      CC: gcc
+      PINGU_LDFLAGS: "-H=windowsgui -s -w -extldflags '-static'"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,23 +47,46 @@ jobs:
           $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.TrimStart('v') }
           .\scripts\build-release.ps1 -Version $version
 
+      - name: Verify static MinGW runtime linkage
+        shell: powershell
+        run: |
+          $imports = (& objdump.exe -p .\dist\app\pingu.exe) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "objdump.exe returned exit code $LASTEXITCODE." }
+          $forbidden = @(
+            'libmcfgthread-2.dll',
+            'libgcc_s_seh-1.dll',
+            'libstdc++-6.dll',
+            'libwinpthread-1.dll',
+            'libssp-0.dll',
+            'libgomp-1.dll',
+            'libquadmath-0.dll'
+          )
+          foreach ($library in $forbidden) {
+            if ($imports -match [regex]::Escape($library)) {
+              throw "pingu.exe still imports $library."
+            }
+          }
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Pingu-Windows-x64
           path: |
             dist/Pingu-Setup-*.exe
+            dist/Pingu-Portable-*.zip
             dist/SHA256SUMS.txt
 
       - name: Attest release provenance
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: dist/Pingu-Setup-*.exe
+          subject-path: |
+            dist/Pingu-Setup-*.exe
+            dist/Pingu-Portable-*.zip
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/Pingu-Setup-*.exe dist/SHA256SUMS.txt --verify-tag --generate-notes --title "Pingu ${{ github.ref_name }}"
+        run: gh release create "${{ github.ref_name }}" dist/Pingu-Setup-*.exe dist/Pingu-Portable-*.zip dist/SHA256SUMS.txt --verify-tag --generate-notes --title "Pingu ${{ github.ref_name }}"
