@@ -29,6 +29,7 @@ coverage.txt
 coverage.html
 go.work
 go.work.sum
+pingu.exe
 /vendor/
 
 # Local configuration and secrets
