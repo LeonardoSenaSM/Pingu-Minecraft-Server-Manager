@@ -116,8 +116,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ github.ref_name }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            throw "Release ${{ github.ref_name }} already exists; refusing to create a duplicate."
-          }
-          gh release create "${{ github.ref_name }}" dist/Pingu-Setup-*.exe dist/Pingu-Portable-*.zip dist/SHA256SUMS.txt --verify-tag --generate-notes --title "Pingu ${{ github.ref_name }}"
+          gh release create "${{ github.ref_name }}" `
+            dist/Pingu-Setup-*.exe `
+            dist/Pingu-Portable-*.zip `
+            dist/SHA256SUMS.txt `
+            --verify-tag `
+            --generate-notes `
+            --title "Pingu ${{ github.ref_name }}"
