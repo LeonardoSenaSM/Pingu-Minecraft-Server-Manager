@@ -1,8 +1,8 @@
 [Details]
-  Name = "MineServer"
-  ID = "io.github.mineserver.app"
-  Version = "2.0.0"
-  Build = 8
+Name = "Pingu"
+ID = "io.github.pingu.minecraft.server.manager"
+Version = "3.0.0"
+Build = 3
 
 [Migrations]
-  fyneDo = true
+fyneDo = true

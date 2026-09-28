@@ -13,7 +13,7 @@ O usuário não precisa instalar Go, GCC nem configurar o Java manualmente.
 3. Execute o instalador e escolha o idioma, a pasta de instalação e os atalhos.
 4. Marque **Executar o Pingu** ao concluir.
 
-O instalador inclui o `pingu.exe` vinculado estaticamente, o runtime Eclipse Temurin Java 25 LTS de 64 bits, atalhos do Menu Iniciar, um atalho da Área de Trabalho marcado por padrão e o desinstalador padrão do Windows. São solicitados privilégios de Administrador porque o aplicativo é instalado em Arquivos de Programas de 64 bits.
+O instalador inclui o `pingu.exe` vinculado estaticamente, o Eclipse Temurin JRE `25.0.4.1+1` de 64 bits fixado, atalhos do Menu Iniciar, um atalho da Área de Trabalho marcado por padrão e o desinstalador padrão do Windows. Os privilégios de Administrador são solicitados somente para instalar em Arquivos de Programas de 64 bits.
 
 Na primeira vez em que **PLAY** for selecionado, o Pingu baixa as versões compatíveis mais recentes do PaperMC, Geyser, Floodgate, Chunky e CoreProtect. Essa etapa requer conexão com a internet.
 
@@ -48,9 +48,31 @@ O Pingu exige Java **25 ou superior** para iniciar o PaperMC.
 - Encerramento imediato dos proxies com cancelamento de contexto e fechamento dos sockets.
 - Downloads assíncronos de dependências com progresso e cancelamento.
 - Comandos de console, OP, kick, banimento temporário e pardon.
+- Catálogo bilíngue pesquisável que preenche a entrada do console sem executar automaticamente.
+- Dimensionamento conservador automático da memória JVM ou limite manual validado.
+- Visão operacional com identidade, endpoints, jogadores, memória configurada e tempo ativo.
 - Troca instantânea entre português do Brasil e inglês.
 - Buffer circular do console limitado a 2.500 entradas.
 - Configurações persistidas em `server/config.json`.
+
+## Iniciar, parar e conectar
+
+1. Clique em **PLAY**. Na primeira execução, aguarde o download das dependências.
+2. O Pingu reserva uma porta TCP Java livre a partir de `25565` e uma porta UDP Bedrock a partir de `19132`.
+3. Compartilhe o `IP:porta` exibido com jogadores da mesma LAN. Para acesso pela Internet, redirecione essas portas exatas no roteador e libere-as no Firewall do Windows.
+4. O processo Paper inicia no primeiro pacote Java/Bedrock recebido. Use **Parar Servidor** para salvar e encerrar corretamente ou **Reiniciar Servidor** para aplicar configurações como um novo limite de memória.
+
+O Pingu não cria um túnel público. Os endereços mostrados são endereços da rede local.
+
+## Gerenciamento de memória
+
+O modo **Automático (recomendado)** detecta a RAM física e escolhe um heap máximo conservador, preservando pelo menos 2 GB para o Windows sempre que a máquina tiver memória suficiente. Limites automáticos típicos são 2 GB em um computador com 4 GB, 4 GB em 8 GB, 6 GB em 16 GB e 8 GB em 32 GB ou mais.
+
+O modo **Manual** aceita um heap máximo em GB apenas quando o valor é positivo e mantém a reserva de segurança. O Pingu usa um `-Xms` moderado e o valor escolhido como `-Xmx`. As alterações ficam em `server/config.json` e são aplicadas na próxima inicialização ou reinicialização; uma JVM em execução nunca é redimensionada.
+
+## Console e catálogo de comandos
+
+A aba Console contém um log ao vivo limitado e uma lista pesquisável de comandos comuns do Paper/Minecraft. Selecionar um item apenas copia sua sintaxe editável para o campo de entrada. Preencha parâmetros como `<jogador>` e pressione Enter ou clique em **Enviar**. Comandos sensíveis recebem destaque e exigem confirmação quando enviados ou acionados diretamente pela interface.
 
 ## Estrutura do repositório
 
@@ -61,6 +83,7 @@ Pingu-Minecraft-Server-Manager/
 ├── scripts/build-release.ps1
 ├── internal/
 │   ├── api/
+│   ├── commands/
 │   ├── gui/
 │   ├── i18n/
 │   ├── manager/
@@ -115,14 +138,50 @@ go build -buildvcs=false -trimpath -ldflags="-H=windowsgui -s -w -extldflags '-s
 
 O script de Release e o workflow também inspecionam o executável com `objdump.exe`. O build falha se `pingu.exe` importar `libmcfgthread-2.dll`, `libgcc_s_seh-1.dll`, `libstdc++-6.dll` ou `libwinpthread-1.dll`.
 
+O arquivo do Java é fixado e verificado antes da extração. O SHA-256 esperado de `OpenJDK25U-jre_x64_windows_hotspot_25.0.4.1_1.zip` é:
+
+```text
+4c95451cea98556def2c54f7782933f52a26d4a36bd85e1d59f0364464828b07
+```
+
 ## Testes
 
 ```powershell
 go mod download
 go test -buildvcs=false -tags ci ./...
 go vet -buildvcs=false -tags ci ./...
-go test -race -buildvcs=false ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
+go test -race -buildvcs=false ./internal/commands ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
 ```
+
+## Verificar uma versão baixada
+
+Baixe o `SHA256SUMS.txt` junto do instalador ou ZIP portátil e execute:
+
+```powershell
+(Get-FileHash .\Pingu-Setup-3.0.0-Windows-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\SHA256SUMS.txt
+```
+
+Os valores precisam ser iguais antes de executar o arquivo.
+
+## Criar uma Release por tag
+
+Depois da revisão da branch e de um build bem-sucedido no workflow Windows, crie e envie uma tag de versão:
+
+```powershell
+git tag -a v3.1.0 -m "Pingu v3.1.0"
+git push origin v3.1.0
+```
+
+O workflow obtém a versão `3.1.0` da tag, valida testes, vínculo estático e checksum do runtime e publica somente instalador, ZIP portátil e arquivo de checksums. Uma execução manual cria artefatos no workflow, mas não publica uma Release do GitHub.
+
+## Solução de problemas
+
+- **O Windows informa uma DLL do MinGW ausente:** use um instalador/ZIP oficial. Builds locais precisam passar pela inspeção estática do `objdump.exe`.
+- **Java 25 não foi encontrado:** reinstale o pacote completo e confirme a existência de `runtime\bin\java.exe` ao lado do executável instalado.
+- **Jogadores não conectam:** confirme que PLAY mostra os dois listeners como ON, use as portas exibidas e verifique o Firewall do Windows/redirecionamento do roteador.
+- **Um comando foi recusado:** confirme que o Paper está em execução e substitua cada `<parâmetro>` antes do envio.
+- **A configuração não foi aplicada:** reinicie o servidor Paper. Alterações de memória não modificam uma JVM já em execução.
 
 ## Dados do usuário e rede
 

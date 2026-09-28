@@ -14,6 +14,8 @@ type Settings struct {
 	Language                 string `json:"language"`
 	ServerName               string `json:"server_name"`
 	MaxPlayers               int    `json:"max_players"`
+	MemoryMode               string `json:"memory_mode"`
+	MemoryLimitGB            int    `json:"memory_limit_gb,omitempty"`
 }
 
 type PaperInstallation struct {
@@ -44,6 +46,13 @@ type Status struct {
 	BedrockPort      int
 	LocalIPs         []string
 	ActiveSessions   int
+	ServerName       string
+	MinecraftVersion string
+	PlayersOnline    int
+	MemoryMode       string
+	TotalMemoryGB    int
+	MemoryMaximumGB  int
+	Uptime           time.Duration
 }
 
 type LogEntry struct {
@@ -80,5 +89,6 @@ type Events struct {
 	Players  func()
 	Files    func()
 	Language func(string)
+	Settings func(Settings)
 	Progress func(Progress)
 }

@@ -141,7 +141,7 @@ func (c *Client) Download(ctx context.Context, downloadURL, destination string, 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "MineServer/2.0")
+	req.Header.Set("User-Agent", "Pingu/3.0")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -194,7 +194,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, target any) error
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "MineServer/2.0")
+	req.Header.Set("User-Agent", "Pingu/3.0")
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -18,6 +18,10 @@ $env:PINGU_VERSION = $Version
 $env:CGO_ENABLED = '1'
 $env:CC = 'gcc'
 $staticLinkerFlags = "-H=windowsgui -s -w -extldflags '-static'"
+$temurinVersion = '25.0.4.1+1'
+$temurinArchiveName = 'OpenJDK25U-jre_x64_windows_hotspot_25.0.4.1_1.zip'
+$temurinUrl = "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/$temurinArchiveName"
+$temurinSHA256 = '4c95451cea98556def2c54f7782933f52a26d4a36bd85e1d59f0364464828b07'
 
 foreach ($command in @('go.exe', 'gcc.exe', 'objdump.exe')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
@@ -34,9 +38,23 @@ New-Item -ItemType Directory -Path $runtimeTemp -Force | Out-Null
 Push-Location $projectRoot
 try {
     go mod download
+    if ($LASTEXITCODE -ne 0) {
+        throw "go mod download retornou o código $LASTEXITCODE."
+    }
+    $goFiles = Get-ChildItem -LiteralPath $projectRoot -Filter '*.go' -File -Recurse |
+        Where-Object { $_.FullName -notmatch '[\\/]vendor[\\/]' } |
+        Select-Object -ExpandProperty FullName
+    gofmt -w $goFiles
+    if ($LASTEXITCODE -ne 0) {
+        throw "gofmt retornou o código $LASTEXITCODE."
+    }
     if (-not $SkipTests) {
         go test -buildvcs=false -tags ci ./...
+        if ($LASTEXITCODE -ne 0) { throw "go test retornou o código $LASTEXITCODE." }
         go vet -buildvcs=false -tags ci ./...
+        if ($LASTEXITCODE -ne 0) { throw "go vet retornou o código $LASTEXITCODE." }
+        go test -race -buildvcs=false ./internal/commands ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
+        if ($LASTEXITCODE -ne 0) { throw "go test -race retornou o código $LASTEXITCODE." }
     }
 
     $executable = Join-Path $stage 'pingu.exe'
@@ -71,9 +89,13 @@ try {
     }
     Write-Host 'Verificação concluída: nenhuma DLL de runtime do MinGW foi importada por pingu.exe.'
 
-    $temurinUrl = 'https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk'
-    Write-Host 'Baixando o runtime Temurin Java 25 LTS...'
-    Invoke-WebRequest -Uri $temurinUrl -OutFile $javaArchive -MaximumRedirection 10
+    Write-Host "Baixando Eclipse Temurin JRE $temurinVersion..."
+    Invoke-WebRequest -Uri $temurinUrl -OutFile $javaArchive -MaximumRedirection 10 -UseBasicParsing
+    $actualJavaSHA256 = (Get-FileHash -LiteralPath $javaArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualJavaSHA256 -ne $temurinSHA256) {
+        throw "SHA-256 do runtime Java inválido. Esperado $temurinSHA256; obtido $actualJavaSHA256."
+    }
+    Write-Host "SHA-256 do runtime Java validado: $actualJavaSHA256"
     Expand-Archive -LiteralPath $javaArchive -DestinationPath $runtimeExtract -Force
     $runtimeRoot = Get-ChildItem -LiteralPath $runtimeExtract -Directory | Select-Object -First 1
     if (-not $runtimeRoot -or -not (Test-Path (Join-Path $runtimeRoot.FullName 'bin\java.exe'))) {
@@ -117,4 +139,7 @@ finally {
     Pop-Location
 }
 
-Write-Host "Pingu $Version pronto em $dist"
+Write-Host "Pingu $Version pronto."
+Write-Host "Instalador: $installerExecutable"
+Write-Host "Portátil:   $portableArchive"
+Write-Host "Checksums:  $(Join-Path $dist 'SHA256SUMS.txt')"

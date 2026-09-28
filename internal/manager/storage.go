@@ -42,7 +42,7 @@ func (m *Manager) ensureDirectories() error {
 	}
 	eula := filepath.Join(m.serverDir, "eula.txt")
 	if _, err := os.Stat(eula); errors.Is(err, os.ErrNotExist) {
-		if err := writeBytesAtomic(eula, []byte("# Gerado pelo MineServer\neula=true\n")); err != nil {
+		if err := writeBytesAtomic(eula, []byte("# Gerado pelo Pingu\neula=true\n")); err != nil {
 			return fmt.Errorf("criar eula.txt: %w", err)
 		}
 	}
@@ -75,19 +75,26 @@ func (m *Manager) loadSettings() {
 	if settings.MaxPlayers >= 1 && settings.MaxPlayers <= 1000 {
 		m.settings.MaxPlayers = settings.MaxPlayers
 	}
+	if settings.MemoryMode == MemoryModeAutomatic || settings.MemoryMode == MemoryModeManual {
+		if _, err := BuildMemoryPlan(m.totalMemoryGB, settings.MemoryMode, settings.MemoryLimitGB); err == nil {
+			m.settings.MemoryMode = settings.MemoryMode
+			m.settings.MemoryLimitGB = settings.MemoryLimitGB
+		}
+	}
 	language := m.settings.Language
 	m.mu.Unlock()
 	m.notifyLanguage(language)
+	m.notifySettings()
 }
 
 func (m *Manager) InstalledPaperVersion() string {
 	data, err := os.ReadFile(m.paperInstallationPath())
 	if err != nil {
-		return "não identificada"
+		return ""
 	}
 	var installation PaperInstallation
 	if err := json.Unmarshal(data, &installation); err != nil || installation.Version == "" {
-		return "não identificada"
+		return ""
 	}
 	return installation.Version
 }
@@ -101,7 +108,7 @@ func (m *Manager) updateServerProperties(paperPort int) error {
 	maxPlayers := m.settings.MaxPlayers
 	m.mu.RUnlock()
 	if serverName == "" {
-		serverName = "MineServer"
+		serverName = "Pingu"
 	}
 	if maxPlayers < 1 || maxPlayers > 1000 {
 		maxPlayers = 20
@@ -112,7 +119,7 @@ func (m *Manager) updateServerProperties(paperPort int) error {
 		return fmt.Errorf("ler server.properties: %w", err)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		data = []byte("# Gerado pelo MineServer\nonline-mode=true\nenable-query=true\nview-distance=10\nsimulation-distance=8\n")
+		data = []byte("# Gerado pelo Pingu\nonline-mode=true\nenable-query=true\nview-distance=10\nsimulation-distance=8\n")
 	}
 	updates := map[string]string{
 		"server-ip": "127.0.0.1", "server-port": strconv.Itoa(paperPort),
@@ -192,9 +199,9 @@ func geyserDefaultConfig(jarPath string) ([]byte, error) {
   address: 127.0.0.1
   port: 19133
   clone-remote-port: false
-  motd1: "MineServer"
+  motd1: "Pingu"
   motd2: "Java + Bedrock"
-  server-name: "MineServer"
+  server-name: "Pingu"
 remote:
   address: 127.0.0.1
   port: 25566

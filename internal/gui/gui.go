@@ -18,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"mineserver/internal/api"
+	"mineserver/internal/commands"
 	"mineserver/internal/i18n"
 	"mineserver/internal/manager"
 )
@@ -45,7 +46,10 @@ func (u *UI) Build() fyne.CanvasObject {
 	serverStatus.TextStyle = fyne.TextStyle{Bold: true}
 	networkStatus := widget.NewLabel(loc.T("inactive"))
 	networkStatus.TextStyle = fyne.TextStyle{Bold: true}
+	overviewText := widget.NewLabel("")
+	overviewText.Wrapping = fyne.TextWrapWord
 	installedValue := ""
+	installedLoaded := false
 	lastStatus := manager.Status{}
 	var linkControls *LinkControls
 
@@ -76,6 +80,13 @@ func (u *UI) Build() fyne.CanvasObject {
 	showInfo := func(titleKey, messageKey string, args ...any) {
 		fyne.Do(func() { dialog.ShowInformation(loc.T(titleKey), loc.T(messageKey, args...), u.window) })
 	}
+	confirmSensitive := func(command string, confirmed func()) {
+		dialog.ShowConfirm(loc.T("confirm_command_title"), loc.T("confirm_command_message", command), func(ok bool) {
+			if ok {
+				confirmed()
+			}
+		}, u.window)
+	}
 
 	refreshStatus := func(status manager.Status) {
 		fyne.Do(func() {
@@ -86,20 +97,68 @@ func (u *UI) Build() fyne.CanvasObject {
 			} else {
 				networkStatus.SetText(loc.T("inactive"))
 			}
+			javaAddress, bedrockAddress := loc.T("inactive"), loc.T("inactive")
+			if len(status.LocalIPs) > 0 && status.JavaListening {
+				javaAddress = fmt.Sprintf("%s:%d", status.LocalIPs[0], status.JavaPort)
+			}
+			if len(status.LocalIPs) > 0 && status.BedrockListening {
+				bedrockAddress = fmt.Sprintf("%s:%d", status.LocalIPs[0], status.BedrockPort)
+			}
+			memoryModeKey := "memory_auto"
+			if status.MemoryMode == manager.MemoryModeManual {
+				memoryModeKey = "memory_manual"
+			}
+			minecraftVersion := status.MinecraftVersion
+			if minecraftVersion == "" {
+				minecraftVersion = loc.T("unknown")
+			}
+			overviewText.SetText(strings.Join([]string{
+				loc.T("overview_server", status.ServerName),
+				loc.T("overview_version", minecraftVersion),
+				loc.T("overview_java", javaAddress),
+				loc.T("overview_bedrock", bedrockAddress),
+				loc.T("overview_players", status.PlayersOnline),
+				loc.T("overview_memory", status.MemoryMaximumGB, status.TotalMemoryGB, loc.T(memoryModeKey)),
+				loc.T("overview_usage"),
+				loc.T("overview_uptime", formatDuration(status.Uptime)),
+			}, "\n"))
 			if linkControls != nil {
 				linkControls.Update(status, installedValue)
 			}
 		})
 	}
+	consoleSignal := make(chan struct{}, 1)
 	refreshConsole := func(manager.LogEntry) {
-		text := m.LogText()
-		fyne.Do(func() {
-			console.SetText(text)
-			console.CursorRow = strings.Count(text, "\n")
-			console.CursorColumn = 0
-			console.Refresh()
-		})
+		select {
+		case consoleSignal <- struct{}{}:
+		default:
+		}
 	}
+	go func() {
+		ticker := time.NewTicker(120 * time.Millisecond)
+		defer ticker.Stop()
+		dirty := false
+		for {
+			select {
+			case <-m.Context().Done():
+				return
+			case <-consoleSignal:
+				dirty = true
+			case <-ticker.C:
+				if !dirty {
+					continue
+				}
+				dirty = false
+				text := m.LogText()
+				fyne.Do(func() {
+					console.SetText(text)
+					console.CursorRow = strings.Count(text, "\n")
+					console.CursorColumn = 0
+					console.Refresh()
+				})
+			}
+		}
+	}()
 
 	var refreshPlayers func()
 	refreshPlayers = func() {
@@ -111,11 +170,17 @@ func (u *UI) Build() fyne.CanvasObject {
 				name := widget.NewLabel(player)
 				name.TextStyle = fyne.TextStyle{Bold: true}
 				op := widget.NewButton(loc.T("make_op"), func() {
-					u.runSimple("promote_failed", func(context.Context) error { return m.SendCommand("op " + player) }, showError)
+					command := "op " + player
+					confirmSensitive(command, func() {
+						u.runSimple("promote_failed", func(context.Context) error { return m.SendCommand(command) }, showError)
+					})
 				})
 				ban := widget.NewButton(loc.T("tempban"), func() {
-					u.runSimple("ban_failed", func(context.Context) error { return m.TempBan(player, 3*24*time.Hour) }, showError)
+					confirmSensitive("ban "+player, func() {
+						u.runSimple("ban_failed", func(context.Context) error { return m.TempBan(player, 3*24*time.Hour) }, showError)
+					})
 				})
+				ban.Importance = widget.DangerImportance
 				actions := container.NewHBox(op)
 				if onlineNow {
 					kick := widget.NewButton(loc.T("kick"), func() {
@@ -214,6 +279,7 @@ func (u *UI) Build() fyne.CanvasObject {
 
 	jvmCard := widget.NewCard(loc.T("jvm_title"), loc.T("jvm_subtitle"), serverStatus)
 	networkCard := widget.NewCard(loc.T("network_title"), loc.T("network_subtitle"), networkStatus)
+	overviewCard := widget.NewCard(loc.T("overview_title"), loc.T("overview_subtitle"), overviewText)
 	linkControls = BuildLinkControls(u.window, loc, m.ShutdownLinks)
 	playButton := widget.NewButtonWithIcon(loc.T("play"), theme.MediaPlayIcon(), func() {
 		u.runOperation(func(ctx context.Context) error { return m.StartAll(ctx) }, func(err error) {
@@ -224,7 +290,13 @@ func (u *UI) Build() fyne.CanvasObject {
 	})
 	playButton.Importance = widget.HighImportance
 	stopButton := widget.NewButtonWithIcon(loc.T("stop_server"), theme.MediaStopIcon(), func() {
-		u.runSimple("stop_failed", func(context.Context) error { return m.StopServer(false) }, showError)
+		confirmSensitive("stop", func() {
+			u.runSimple("stop_failed", func(context.Context) error { return m.StopServer(false) }, showError)
+		})
+	})
+	stopButton.Importance = widget.DangerImportance
+	restartButton := widget.NewButtonWithIcon(loc.T("restart_server"), theme.ViewRefreshIcon(), func() {
+		u.runSimple("restart_failed", m.RestartServer, showError)
 	})
 	updateButton := widget.NewButtonWithIcon(loc.T("update_dependencies"), theme.DownloadIcon(), func() {
 		u.runOperation(func(ctx context.Context) error { return m.UpdateDependencies(ctx) }, func(err error) {
@@ -239,24 +311,64 @@ func (u *UI) Build() fyne.CanvasObject {
 	homeHelp := widget.NewLabel(loc.T("quick_guide"))
 	homeHelp.Wrapping = fyne.TextWrapWord
 	home := container.NewVScroll(container.NewVBox(
-		widget.NewLabelWithStyle("MineServer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		playButton, linkControls.Root, container.NewGridWithColumns(2, jvmCard, networkCard),
-		container.NewGridWithColumns(2, stopButton, updateButton), progressPanel, homeHelp,
+		widget.NewLabelWithStyle("Pingu", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		playButton, overviewCard, linkControls.Root, container.NewGridWithColumns(2, jvmCard, networkCard),
+		container.NewGridWithColumns(3, stopButton, restartButton, updateButton), progressPanel, homeHelp,
 	))
 
 	commandEntry := widget.NewEntry()
 	commandEntry.SetPlaceHolder(loc.T("command_placeholder"))
-	sendCommand := func() {
+	var sendCommand func()
+	sendNow := func(command string) {
+		commandEntry.SetText("")
+		u.runSimple("command_failed", func(context.Context) error { return m.SendCommand(command) }, showError)
+	}
+	sendCommand = func() {
 		command := strings.TrimSpace(commandEntry.Text)
 		if command == "" {
 			return
 		}
-		commandEntry.SetText("")
-		u.runSimple("command_failed", func(context.Context) error { return m.SendCommand(command) }, showError)
+		if commands.RiskForInput(command) >= commands.RiskSensitive {
+			dialog.ShowConfirm(loc.T("confirm_command_title"), loc.T("confirm_command_message", command), func(confirmed bool) {
+				if confirmed {
+					sendNow(command)
+				}
+			}, u.window)
+			return
+		}
+		sendNow(command)
 	}
 	commandEntry.OnSubmitted = func(string) { sendCommand() }
 	sendButton := widget.NewButtonWithIcon(loc.T("send"), theme.MailSendIcon(), sendCommand)
-	terminal := container.NewBorder(nil, container.NewBorder(nil, nil, nil, sendButton, commandEntry), nil, nil, console)
+	commandSearch := widget.NewEntry()
+	commandSearch.SetPlaceHolder(loc.T("search_commands"))
+	commandCatalogBox := container.NewVBox()
+	var refreshCommandCatalog func()
+	refreshCommandCatalog = func() {
+		query := commandSearch.Text
+		commandCatalogBox.RemoveAll()
+		for _, item := range commands.Filter(query, func(key string) string { return loc.T(key) }) {
+			command := item
+			button := widget.NewButton(command.Syntax, func() {
+				commandEntry.SetText(commands.SelectionText(command))
+				u.window.Canvas().Focus(commandEntry)
+			})
+			button.Alignment = widget.ButtonAlignLeading
+			if command.Risk == commands.RiskDangerous {
+				button.Importance = widget.DangerImportance
+			}
+			description := widget.NewLabel(loc.T(command.DescriptionKey) + " • " + loc.T(command.CategoryKey))
+			description.TextStyle = fyne.TextStyle{Italic: true}
+			description.Wrapping = fyne.TextWrapWord
+			commandCatalogBox.Add(container.NewVBox(button, description, widget.NewSeparator()))
+		}
+		commandCatalogBox.Refresh()
+	}
+	commandSearch.OnChanged = func(string) { refreshCommandCatalog() }
+	catalogCard := widget.NewCard(loc.T("command_catalog"), loc.T("command_catalog_subtitle"), container.NewBorder(commandSearch, nil, nil, nil, container.NewVScroll(commandCatalogBox)))
+	consoleSplit := container.NewHSplit(console, catalogCard)
+	consoleSplit.Offset = 0.70
+	terminal := container.NewBorder(nil, container.NewBorder(nil, nil, nil, sendButton, commandEntry), nil, nil, consoleSplit)
 
 	onlineCard := widget.NewCard(loc.T("online_players"), loc.T("quick_actions"), container.NewVScroll(onlineBox))
 	offlineCard := widget.NewCard(loc.T("offline_players"), loc.T("known_players"), container.NewVScroll(offlineBox))
@@ -318,6 +430,7 @@ func (u *UI) Build() fyne.CanvasObject {
 			status := m.Status()
 			fyne.Do(func() {
 				installedValue = installed
+				installedLoaded = true
 				installedLabel.SetText(loc.T("installed_version", installed))
 				linkControls.Update(status, installedValue)
 			})
@@ -379,6 +492,53 @@ func (u *UI) Build() fyne.CanvasObject {
 	maxPlayersLabel := widget.NewLabel(loc.T("max_players"))
 	maxPlayersEntry := widget.NewEntry()
 	maxPlayersEntry.SetText(strconv.Itoa(settings.MaxPlayers))
+	memoryPlan := m.MemoryPlan()
+	memoryModeLabel := widget.NewLabel(loc.T("memory_mode"))
+	memoryLimitLabel := widget.NewLabel(loc.T("memory_limit"))
+	memoryLimitEntry := widget.NewEntry()
+	memoryLimit := settings.MemoryLimitGB
+	if memoryLimit < 1 {
+		memoryLimit = memoryPlan.RecommendedGB
+	}
+	memoryLimitEntry.SetText(strconv.Itoa(memoryLimit))
+	memoryDetectedLabel := widget.NewLabel(loc.T("memory_detected", memoryPlan.TotalGB, memoryPlan.RecommendedGB))
+	memoryDetectedLabel.Wrapping = fyne.TextWrapWord
+	memoryHelp := widget.NewLabel(loc.T("memory_help"))
+	memoryHelp.Wrapping = fyne.TextWrapWord
+	memoryRestartHelp := widget.NewLabel(loc.T("memory_restart"))
+	memoryRestartHelp.Wrapping = fyne.TextWrapWord
+	changingMemoryMode := false
+	selectedMemoryMode := settings.MemoryMode
+	if selectedMemoryMode != manager.MemoryModeManual {
+		selectedMemoryMode = manager.MemoryModeAutomatic
+	}
+	memoryModeSelect := widget.NewSelect(nil, func(display string) {
+		if changingMemoryMode {
+			return
+		}
+		if display == loc.T("memory_manual") {
+			selectedMemoryMode = manager.MemoryModeManual
+			memoryLimitEntry.Enable()
+		} else {
+			selectedMemoryMode = manager.MemoryModeAutomatic
+			memoryLimitEntry.SetText(strconv.Itoa(memoryPlan.RecommendedGB))
+			memoryLimitEntry.Disable()
+		}
+	})
+	setMemoryModeOptions := func() {
+		changingMemoryMode = true
+		memoryModeSelect.Options = []string{loc.T("memory_auto"), loc.T("memory_manual")}
+		if selectedMemoryMode == manager.MemoryModeManual {
+			memoryModeSelect.SetSelected(loc.T("memory_manual"))
+			memoryLimitEntry.Enable()
+		} else {
+			memoryModeSelect.SetSelected(loc.T("memory_auto"))
+			memoryLimitEntry.Disable()
+		}
+		memoryModeSelect.Refresh()
+		changingMemoryMode = false
+	}
+	setMemoryModeOptions()
 	languageLabel := widget.NewLabel(loc.T("language"))
 	changingLanguage := false
 	var retranslate func()
@@ -403,15 +563,28 @@ func (u *UI) Build() fyne.CanvasObject {
 			showInfo("settings_failed", "invalid_settings")
 			return
 		}
+		memoryMode := selectedMemoryMode
+		memoryLimitGB := 0
+		if memoryMode == manager.MemoryModeManual {
+			memoryLimitGB, err = strconv.Atoi(strings.TrimSpace(memoryLimitEntry.Text))
+			if err != nil {
+				showInfo("settings_failed", "invalid_settings")
+				return
+			}
+		}
 		go func() {
-			if err := m.SaveSettings(loc.Language(), serverName, maxPlayers); err != nil {
+			if err := m.SaveSettingsWithMemory(loc.Language(), serverName, maxPlayers, memoryMode, memoryLimitGB); err != nil {
 				showError("settings_failed", err)
 				return
 			}
 			showInfo("settings_saved", "settings_saved_message")
 		}()
 	})
-	settingsCard := widget.NewCard(loc.T("settings_title"), loc.T("settings_subtitle"), container.NewVBox(serverNameLabel, serverNameEntry, maxPlayersLabel, maxPlayersEntry, languageLabel, languageSelect, saveSettingsButton))
+	settingsCard := widget.NewCard(loc.T("settings_title"), loc.T("settings_subtitle"), container.NewVBox(
+		serverNameLabel, serverNameEntry, maxPlayersLabel, maxPlayersEntry, widget.NewSeparator(),
+		memoryModeLabel, memoryModeSelect, memoryLimitLabel, memoryLimitEntry, memoryDetectedLabel, memoryHelp, memoryRestartHelp,
+		widget.NewSeparator(), languageLabel, languageSelect, saveSettingsButton,
+	))
 	openFolderButton := widget.NewButtonWithIcon(loc.T("open_folder"), theme.FolderOpenIcon(), func() {
 		u.runSimple("open_failed", func(context.Context) error { return openFolder(m.ServerDir()) }, showError)
 	})
@@ -441,6 +614,7 @@ func (u *UI) Build() fyne.CanvasObject {
 		tabs.Refresh()
 		playButton.SetText(loc.T("play"))
 		stopButton.SetText(loc.T("stop_server"))
+		restartButton.SetText(loc.T("restart_server"))
 		updateButton.SetText(loc.T("update_dependencies"))
 		sendButton.SetText(loc.T("send"))
 		commandEntry.SetPlaceHolder(loc.T("command_placeholder"))
@@ -449,6 +623,10 @@ func (u *UI) Build() fyne.CanvasObject {
 		homeHelp.SetText(loc.T("quick_guide"))
 		setCardText(jvmCard, "jvm_title", "jvm_subtitle")
 		setCardText(networkCard, "network_title", "network_subtitle")
+		setCardText(overviewCard, "overview_title", "overview_subtitle")
+		setCardText(catalogCard, "command_catalog", "command_catalog_subtitle")
+		commandSearch.SetPlaceHolder(loc.T("search_commands"))
+		refreshCommandCatalog()
 		linkControls.Retranslate()
 		setCardText(onlineCard, "online_players", "quick_actions")
 		setCardText(offlineCard, "offline_players", "known_players")
@@ -461,8 +639,10 @@ func (u *UI) Build() fyne.CanvasObject {
 		setCardText(gamemodeCard, "gamemode", "gamemode_subtitle")
 		setCardText(settingsCard, "settings_title", "settings_subtitle")
 		setCardText(filesCard, "files_title", "files_subtitle")
-		if installedValue == "" {
+		if !installedLoaded {
 			installedLabel.SetText(loc.T("installed_version", loc.T("loading")))
+		} else if installedValue == "" {
+			installedLabel.SetText(loc.T("installed_version", loc.T("unknown")))
 		} else {
 			installedLabel.SetText(loc.T("installed_version", installedValue))
 		}
@@ -487,6 +667,12 @@ func (u *UI) Build() fyne.CanvasObject {
 		serverNameEntry.SetPlaceHolder(loc.T("server_name_placeholder"))
 		maxPlayersLabel.SetText(loc.T("max_players"))
 		maxPlayersEntry.SetPlaceHolder(loc.T("max_players_placeholder"))
+		memoryModeLabel.SetText(loc.T("memory_mode"))
+		memoryLimitLabel.SetText(loc.T("memory_limit"))
+		memoryDetectedLabel.SetText(loc.T("memory_detected", memoryPlan.TotalGB, memoryPlan.RecommendedGB))
+		memoryHelp.SetText(loc.T("memory_help"))
+		memoryRestartHelp.SetText(loc.T("memory_restart"))
+		setMemoryModeOptions()
 		languageLabel.SetText(loc.T("language"))
 		saveSettingsButton.SetText(loc.T("save_settings"))
 		openFolderButton.SetText(loc.T("open_folder"))
@@ -509,6 +695,24 @@ func (u *UI) Build() fyne.CanvasObject {
 		Log: refreshConsole, Status: refreshStatus,
 		Players: func() { go refreshPlayers() }, Files: func() { go refreshFiles() },
 		Language: func(language string) { fyne.Do(func() { loc.SetLanguage(language); retranslate() }) },
+		Settings: func(saved manager.Settings) {
+			fyne.Do(func() {
+				serverNameEntry.SetText(saved.ServerName)
+				maxPlayersEntry.SetText(strconv.Itoa(saved.MaxPlayers))
+				selectedMemoryMode = saved.MemoryMode
+				if selectedMemoryMode != manager.MemoryModeManual {
+					selectedMemoryMode = manager.MemoryModeAutomatic
+				}
+				memoryPlan = m.MemoryPlan()
+				limit := saved.MemoryLimitGB
+				if limit < 1 {
+					limit = memoryPlan.RecommendedGB
+				}
+				memoryLimitEntry.SetText(strconv.Itoa(limit))
+				memoryDetectedLabel.SetText(loc.T("memory_detected", memoryPlan.TotalGB, memoryPlan.RecommendedGB))
+				setMemoryModeOptions()
+			})
+		},
 		Progress: func(progress manager.Progress) {
 			fyne.Do(func() {
 				if progress.Done {
@@ -542,7 +746,12 @@ func (u *UI) Build() fyne.CanvasObject {
 		status := m.Status()
 		fyne.Do(func() {
 			installedValue = installed
-			installedLabel.SetText(loc.T("installed_version", installed))
+			installedLoaded = true
+			display := installed
+			if display == "" {
+				display = loc.T("unknown")
+			}
+			installedLabel.SetText(loc.T("installed_version", display))
 			linkControls.Update(status, installedValue)
 		})
 	}()
@@ -598,4 +807,15 @@ func openFolder(path string) error {
 	default:
 		return exec.Command("xdg-open", path).Start()
 	}
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration < 0 {
+		duration = 0
+	}
+	totalSeconds := int64(duration / time.Second)
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 }

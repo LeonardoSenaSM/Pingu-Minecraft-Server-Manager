@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +44,7 @@ type Manager struct {
 	serverCmd     *exec.Cmd
 	serverStdin   io.WriteCloser
 	serverDone    chan struct{}
+	serverStarted time.Time
 	standbyOnExit bool
 	players       map[string]time.Time
 	knownPlayers  map[string]time.Time
@@ -52,6 +52,8 @@ type Manager struct {
 	logs          []LogEntry
 	logStart      int
 	closed        bool
+	totalMemoryGB int
+	memoryError   error
 
 	processMu      sync.Mutex
 	dependenciesMu sync.Mutex
@@ -64,6 +66,10 @@ type Manager struct {
 
 func New(baseDir string) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+	totalMemoryGB, memoryErr := detectPhysicalMemoryGB()
+	if totalMemoryGB < 1 {
+		totalMemoryGB = 4
+	}
 	m := &Manager{
 		baseDir:    baseDir,
 		serverDir:  filepath.Join(baseDir, "server"),
@@ -74,12 +80,15 @@ func New(baseDir string) *Manager {
 		settings: Settings{
 			SelectedMinecraftVersion: api.LatestVersion,
 			Language:                 i18n.Portuguese,
-			ServerName:               "MineServer",
+			ServerName:               "Pingu",
 			MaxPlayers:               20,
+			MemoryMode:               MemoryModeAutomatic,
 		},
-		serverState:  StateStopped,
-		players:      make(map[string]time.Time),
-		knownPlayers: make(map[string]time.Time),
+		serverState:   StateStopped,
+		totalMemoryGB: totalMemoryGB,
+		memoryError:   memoryErr,
+		players:       make(map[string]time.Time),
+		knownPlayers:  make(map[string]time.Time),
 	}
 	m.proxy = proxy.New(idleTimeout, proxy.Hooks{
 		Prepare: m.prepareProxyBackends,
@@ -120,6 +129,9 @@ func (m *Manager) Initialize() error {
 			return
 		}
 		m.loadSettings()
+		if m.memoryError != nil {
+			m.Log("warning", "memory", "não foi possível detectar a RAM física; usando 4 GB como referência segura", m.memoryError)
+		}
 		if err := m.updateServerProperties(m.paperPort()); err != nil {
 			m.initializeErr = err
 			return
@@ -142,6 +154,11 @@ func (m *Manager) Settings() Settings {
 }
 
 func (m *Manager) SaveSettings(language, serverName string, maxPlayers int) error {
+	settings := m.Settings()
+	return m.SaveSettingsWithMemory(language, serverName, maxPlayers, settings.MemoryMode, settings.MemoryLimitGB)
+}
+
+func (m *Manager) SaveSettingsWithMemory(language, serverName string, maxPlayers int, memoryMode string, memoryLimitGB int) error {
 	m.settingsMu.Lock()
 	defer m.settingsMu.Unlock()
 	serverName = strings.TrimSpace(serverName)
@@ -151,10 +168,15 @@ func (m *Manager) SaveSettings(language, serverName string, maxPlayers int) erro
 	if serverName == "" || maxPlayers < 1 || maxPlayers > 1000 {
 		return errors.New("nome inválido ou max-players fora do intervalo de 1 a 1000")
 	}
+	if _, err := BuildMemoryPlan(m.totalMemoryGB, memoryMode, memoryLimitGB); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	m.settings.Language = language
 	m.settings.ServerName = serverName
 	m.settings.MaxPlayers = maxPlayers
+	m.settings.MemoryMode = memoryMode
+	m.settings.MemoryLimitGB = memoryLimitGB
 	settings := m.settings
 	port := m.paperPortLocked()
 	m.mu.Unlock()
@@ -170,6 +192,7 @@ func (m *Manager) SaveSettings(language, serverName string, maxPlayers int) erro
 		}
 	}
 	m.notifyLanguage(language)
+	m.notifySettings()
 	m.notifyFiles()
 	return nil
 }
@@ -217,7 +240,18 @@ func (m *Manager) Status() Status {
 	ports := health.Ports
 	m.mu.RLock()
 	state := m.serverState
+	settings := m.settings
+	playersOnline := len(m.players)
+	started := m.serverStarted
 	m.mu.RUnlock()
+	plan, planErr := BuildMemoryPlan(m.totalMemoryGB, settings.MemoryMode, settings.MemoryLimitGB)
+	if planErr != nil {
+		plan, _ = BuildMemoryPlan(m.totalMemoryGB, MemoryModeAutomatic, 0)
+	}
+	uptime := time.Duration(0)
+	if !started.IsZero() {
+		uptime = time.Since(started).Truncate(time.Second)
+	}
 	return Status{
 		ServerState:   state,
 		NetworkActive: health.TCPListening && health.UDPListening,
@@ -225,10 +259,30 @@ func (m *Manager) Status() Status {
 		JavaPort:    ports.JavaPublic,
 		BedrockPort: ports.BedrockPublic, LocalIPs: ports.LocalIPs,
 		ActiveSessions: m.proxy.SessionCount(),
+		ServerName:     settings.ServerName, MinecraftVersion: m.InstalledPaperVersion(),
+		PlayersOnline: playersOnline, MemoryMode: plan.Mode, TotalMemoryGB: plan.TotalGB,
+		MemoryMaximumGB: plan.MaximumGB, Uptime: uptime,
 	}
 }
 
-// ShutdownLinks cancela conexões e fecha listeners de rede.
+func (m *Manager) MemoryPlan() MemoryPlan {
+	plan, err := m.validatedMemoryPlan()
+	if err == nil {
+		return plan
+	}
+	plan, _ = BuildMemoryPlan(m.totalMemoryGB, MemoryModeAutomatic, 0)
+	return plan
+}
+
+func (m *Manager) validatedMemoryPlan() (MemoryPlan, error) {
+	m.mu.RLock()
+	settings := m.settings
+	m.mu.RUnlock()
+	return BuildMemoryPlan(m.totalMemoryGB, settings.MemoryMode, settings.MemoryLimitGB)
+}
+
+// ShutdownLinks atomically stops accepting new Java/Bedrock traffic, cancels
+// all proxy sessions and waits for their tracked goroutines to finish.
 func (m *Manager) ShutdownLinks() error {
 	if err := m.proxy.Close(); err != nil {
 		m.Log("error", "proxy", "falha ao derrubar links de conexão", err)
@@ -262,7 +316,7 @@ func (m *Manager) Log(level, component, message string, err error) {
 		ServerName: m.settings.ServerName, Message: message,
 	}
 	if entry.ServerName == "" {
-		entry.ServerName = "MineServer"
+		entry.ServerName = "Pingu"
 	}
 	if err != nil {
 		entry.Err = err.Error()
@@ -375,22 +429,12 @@ func (m *Manager) goTracked(task func(context.Context)) bool {
 func (m *Manager) statusMonitorLoop(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	previous := m.Status()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			current := m.Status()
-			if current.ServerState != previous.ServerState ||
-				current.JavaListening != previous.JavaListening ||
-				current.BedrockListening != previous.BedrockListening ||
-				current.JavaPort != previous.JavaPort || current.BedrockPort != previous.BedrockPort ||
-				current.ActiveSessions != previous.ActiveSessions ||
-				strings.Join(current.LocalIPs, "\x00") != strings.Join(previous.LocalIPs, "\x00") {
-				previous = current
-				m.notifyStatus()
-			}
+			m.notifyStatus()
 		}
 	}
 }
@@ -429,6 +473,16 @@ func (m *Manager) notifyLanguage(language string) {
 	m.mu.RUnlock()
 	if callback != nil {
 		callback(language)
+	}
+}
+
+func (m *Manager) notifySettings() {
+	m.mu.RLock()
+	callback := m.events.Settings
+	settings := m.settings
+	m.mu.RUnlock()
+	if callback != nil {
+		callback(settings)
 	}
 }
 
@@ -487,64 +541,4 @@ func (m *Manager) shutdownProcess(timeout time.Duration) error {
 		}
 		return errors.New("Paper não encerrou no prazo e foi finalizado")
 	}
-}
-
-// resolveJavaBinary localiza o executável do Java correto, priorizando JAVA_HOME
-// e instalações no Program Files para evitar atalhos legados do Java 8 no PATH.
-func resolveJavaBinary() string {
-	execName := "java"
-	if runtime.GOOS == "windows" {
-		execName = "java.exe"
-	}
-
-	// 1. Tenta pelo JAVA_HOME
-	if javaHome := os.Getenv("JAVA_HOME"); javaHome != "" {
-		candidate := filepath.Join(javaHome, "bin", execName)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
-		}
-	}
-
-	// 2. No Windows, busca em diretórios de instalação comuns de JDKs recentes (Java 21/25/27)
-	if runtime.GOOS == "windows" {
-		searchDirs := []string{
-			os.Getenv("ProgramFiles"),
-			filepath.Join(os.Getenv("SystemDrive")+"\\", "Program Files"),
-		}
-
-		vendors := []string{
-			"Java",
-			"Eclipse Adoptium",
-			"Microsoft",
-			"Amazon Corretto",
-			"Zulu",
-		}
-
-		for _, base := range searchDirs {
-			if base == "" {
-				continue
-			}
-			for _, vendor := range vendors {
-				vendorPath := filepath.Join(base, vendor)
-				entries, err := os.ReadDir(vendorPath)
-				if err != nil {
-					continue
-				}
-
-				// Varre pastas de JDK em ordem reversa para selecionar a maior versão
-				for i := len(entries) - 1; i >= 0; i-- {
-					entry := entries[i]
-					if entry.IsDir() && (strings.HasPrefix(entry.Name(), "jdk") || strings.HasPrefix(entry.Name(), "jdk-")) {
-						candidate := filepath.Join(vendorPath, entry.Name(), "bin", execName)
-						if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-							return candidate
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// 3. Fallback para o comando "java" do PATH global
-	return "java"
 }

@@ -10,17 +10,23 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"mineserver/internal/api"
+	"mineserver/internal/commands"
 )
 
 var (
-	joinPattern  = regexp.MustCompile(`:\s+([.A-Za-z0-9_]{1,32}) joined the game`)
-	leavePattern = regexp.MustCompile(`:\s+([.A-Za-z0-9_]{1,32}) left the game`)
+	joinPattern        = regexp.MustCompile(`:\s+([.A-Za-z0-9_]{1,32}) joined the game`)
+	leavePattern       = regexp.MustCompile(`:\s+([.A-Za-z0-9_]{1,32}) left the game`)
+	javaVersionPattern = regexp.MustCompile(`(?im)(?:openjdk|java) version "(?:1\.)?([0-9]+)`)
 )
+
+const minimumJavaFeature = 25
 
 func (m *Manager) StartAll(ctx context.Context) error {
 	if err := m.Initialize(); err != nil {
@@ -235,11 +241,16 @@ func (m *Manager) StartServer(ctx context.Context) error {
 	if info, err := os.Stat(jar); err != nil || info.Size() == 0 {
 		return errors.New("server.jar ausente; atualize as dependências")
 	}
-	javaPath, err := exec.LookPath("java")
+	javaPath, javaFeature, err := m.findJavaExecutable()
 	if err != nil {
-		return errors.New("Java não encontrado no PATH; instale Java 21 ou superior")
+		return err
 	}
-	cmd := exec.Command(javaPath, "-Xms1G", "-Xmx4G", "-jar", "server.jar", "nogui")
+	plan, err := m.validatedMemoryPlan()
+	if err != nil {
+		return fmt.Errorf("configuração de memória inválida: %w", err)
+	}
+	args := append(plan.JVMArgs(), "-jar", "server.jar", "nogui")
+	cmd := exec.Command(javaPath, args...)
 	cmd.Dir = m.serverDir
 	cmd.Env = append(os.Environ(), "JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8")
 	stdout, err := cmd.StdoutPipe()
@@ -268,13 +279,17 @@ func (m *Manager) StartServer(ctx context.Context) error {
 		m.serverCmd = nil
 		m.serverStdin = nil
 		m.serverDone = nil
+		m.serverStarted = time.Time{}
 		m.serverState = StateStopped
 		m.mu.Unlock()
 		close(done)
 		m.notifyStatus()
 		return err
 	}
-	m.Log("info", "paper", "iniciando PaperMC com 1–4 GB de RAM", nil)
+	m.mu.Lock()
+	m.serverStarted = time.Now()
+	m.mu.Unlock()
+	m.Log("info", "paper", fmt.Sprintf("iniciando PaperMC com Java %d (%s), modo de memória %s, RAM física %d GB, heap -Xms%dG/-Xmx%dG", javaFeature, javaPath, plan.Mode, plan.TotalGB, plan.InitialGB, plan.MaximumGB), nil)
 	m.goTracked(func(context.Context) { m.consumeProcessOutput("Paper/stdout", stdout) })
 	m.goTracked(func(context.Context) { m.consumeProcessOutput("Paper/stderr", stderr) })
 	m.goTracked(func(managerCtx context.Context) {
@@ -299,6 +314,7 @@ func (m *Manager) StartServer(ctx context.Context) error {
 			m.serverCmd = nil
 			m.serverStdin = nil
 			m.serverDone = nil
+			m.serverStarted = time.Time{}
 			if m.standbyOnExit {
 				m.serverState = StateStandby
 			} else {
@@ -317,6 +333,77 @@ func (m *Manager) StartServer(ctx context.Context) error {
 		m.notifyPlayers()
 	})
 	return nil
+}
+
+func (m *Manager) findJavaExecutable() (string, int, error) {
+	binary := "java"
+	if runtime.GOOS == "windows" {
+		binary = "java.exe"
+	}
+	candidates := make([]string, 0, 3)
+	if absoluteBase, err := filepath.Abs(m.baseDir); err == nil {
+		candidates = append(candidates, filepath.Join(absoluteBase, "runtime", "bin", binary))
+	}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "runtime", "bin", binary))
+	}
+	if systemJava, err := exec.LookPath("java"); err == nil {
+		candidates = append(candidates, systemJava)
+	}
+
+	seen := make(map[string]bool)
+	problems := make([]string, 0)
+	for _, candidate := range candidates {
+		clean := filepath.Clean(candidate)
+		key := strings.ToLower(clean)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if info, err := os.Stat(clean); err != nil || info.IsDir() {
+			continue
+		}
+		feature, err := inspectJavaFeature(clean)
+		if err != nil {
+			problems = append(problems, filepath.Base(clean)+": "+err.Error())
+			continue
+		}
+		if feature < minimumJavaFeature {
+			problems = append(problems, fmt.Sprintf("%s: Java %d é inferior ao mínimo %d", filepath.Base(clean), feature, minimumJavaFeature))
+			continue
+		}
+		return clean, feature, nil
+	}
+	detail := ""
+	if len(problems) > 0 {
+		detail = " (" + strings.Join(problems, "; ") + ")"
+	}
+	return "", 0, fmt.Errorf("Java %d ou superior não encontrado; reinstale o Pingu completo ou instale um Java compatível%s", minimumJavaFeature, detail)
+}
+
+func inspectJavaFeature(javaPath string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, javaPath, "-version").CombinedOutput()
+	if ctx.Err() != nil {
+		return 0, errors.New("tempo limite ao verificar a versão")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("não foi possível executar -version: %w", err)
+	}
+	return parseJavaFeature(string(output))
+}
+
+func parseJavaFeature(output string) (int, error) {
+	match := javaVersionPattern.FindStringSubmatch(output)
+	if len(match) != 2 {
+		return 0, errors.New("saída de versão não reconhecida")
+	}
+	feature, err := strconv.Atoi(match[1])
+	if err != nil || feature < 1 {
+		return 0, errors.New("versão Java inválida")
+	}
+	return feature, nil
 }
 
 func (m *Manager) StopServer(standby bool) error {
@@ -345,11 +432,34 @@ func (m *Manager) StopServer(standby bool) error {
 	return nil
 }
 
-func (m *Manager) SendCommand(command string) error {
-	command = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
-	if command == "" {
-		return errors.New("comando vazio")
+func (m *Manager) RestartServer(ctx context.Context) error {
+	m.mu.RLock()
+	running := m.serverCmd != nil
+	done := m.serverDone
+	m.mu.RUnlock()
+	if !running || done == nil {
+		return errors.New("o servidor não está em execução")
 	}
+	if err := m.StopServer(false); err != nil {
+		return err
+	}
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-timer.C:
+		return errors.New("tempo limite aguardando o encerramento do servidor")
+	case <-done:
+	}
+	return m.StartServer(ctx)
+}
+
+func (m *Manager) SendCommand(command string) error {
+	if err := commands.ValidateInput(command); err != nil {
+		return err
+	}
+	command = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
 	m.mu.Lock()
 	stdin := m.serverStdin
 	if stdin == nil {

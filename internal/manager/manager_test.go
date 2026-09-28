@@ -1,12 +1,80 @@
 package manager
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestLegacySettingsMigrateToAutomaticMemory(t *testing.T) {
+	base := t.TempDir()
+	serverDir := filepath.Join(base, "server")
+	if err := os.MkdirAll(serverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]any{
+		"selected_minecraft_version": "latest",
+		"language":                   "en",
+		"server_name":                "Legacy",
+		"max_players":                12,
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := New(base)
+	m.loadSettings()
+	settings := m.Settings()
+	if settings.MemoryMode != MemoryModeAutomatic || settings.MemoryLimitGB != 0 {
+		t.Fatalf("legacy memory settings not migrated: %+v", settings)
+	}
+}
+
+func TestSendCommandRejectsControlCharactersBeforeServerCheck(t *testing.T) {
+	m := New(t.TempDir())
+	if err := m.SendCommand("say hello\nstop"); err == nil || !strings.Contains(err.Error(), "caracteres inválidos") {
+		t.Fatalf("unexpected validation result: %v", err)
+	}
+}
+
+func TestSendCommandWhenServerIsStopped(t *testing.T) {
+	m := New(t.TempDir())
+	if err := m.SendCommand("list"); err == nil || !strings.Contains(err.Error(), "não está em execução") {
+		t.Fatalf("unexpected stopped-server result: %v", err)
+	}
+}
+
+func TestSendCommandWritesToServerStdin(t *testing.T) {
+	m := New(t.TempDir())
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.serverStdin = writer
+	if err := m.SendCommand("/say hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(reader)
+	if closeErr := reader.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "say hello\n"; got != want {
+		t.Fatalf("stdin = %q, want %q", got, want)
+	}
+}
 
 func TestSettingsUpdateServerProperties(t *testing.T) {
 	m := New(t.TempDir())
@@ -26,6 +94,30 @@ func TestSettingsUpdateServerProperties(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("server.properties não contém %q:\n%s", expected, text)
 		}
+	}
+}
+
+func TestManualMemorySettingsPersist(t *testing.T) {
+	base := t.TempDir()
+	m := New(base)
+	if err := m.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	manualLimit := 1
+	if m.totalMemoryGB >= 6 {
+		manualLimit = 4
+	}
+	if err := m.SaveSettingsWithMemory("en", "Memory Test", 10, MemoryModeManual, manualLimit); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := New(base)
+	reloaded.loadSettings()
+	settings := reloaded.Settings()
+	if settings.MemoryMode != MemoryModeManual || settings.MemoryLimitGB != manualLimit {
+		t.Fatalf("reloaded settings = %+v", settings)
 	}
 }
 

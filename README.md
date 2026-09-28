@@ -13,7 +13,7 @@ Users do not need to install Go, GCC, or configure Java manually.
 3. Run the installer and choose the language, installation directory, and shortcuts.
 4. Select **Launch Pingu** when installation finishes.
 
-The installer contains the statically linked `pingu.exe`, a 64-bit Eclipse Temurin Java 25 LTS runtime, Start Menu shortcuts, a Desktop shortcut enabled by default, and a standard Windows uninstaller. Administrator privileges are required because the application is installed under 64-bit Program Files.
+The installer contains the statically linked `pingu.exe`, the pinned 64-bit Eclipse Temurin JRE `25.0.4.1+1`, Start Menu shortcuts, a Desktop shortcut enabled by default, and a standard Windows uninstaller. Administrator privileges are required only for installation under 64-bit Program Files.
 
 The first time **PLAY** is selected, Pingu downloads the latest compatible PaperMC, Geyser, Floodgate, Chunky, and CoreProtect versions. This step requires an internet connection.
 
@@ -48,9 +48,31 @@ Pingu requires Java **25 or newer** to start PaperMC.
 - Immediate proxy shutdown through context cancellation and socket closure.
 - Asynchronous dependency downloads with progress and cancellation.
 - Console commands, OP, kick, temporary ban, and pardon actions.
+- Searchable bilingual command catalog that fills the console input without executing automatically.
+- Automatic conservative JVM memory sizing or a validated manual heap limit.
+- Operational overview with server identity, endpoints, players, configured memory, and uptime.
 - Live English and Brazilian Portuguese switching.
 - Circular console buffer limited to 2,500 entries.
 - Persistent settings in `server/config.json`.
+
+## Start, stop, and connect
+
+1. Select **PLAY**. On the first run, wait for the dependency download to finish.
+2. Pingu reserves a free Java TCP port starting at `25565` and a Bedrock UDP port starting at `19132`.
+3. Share the displayed `IP:port` with players on the same LAN. For Internet access, forward those exact ports on the router and allow them in Windows Firewall.
+4. The Paper process starts on the first incoming Java/Bedrock packet. Use **Stop Server** for a graceful save and shutdown, or **Restart Server** to apply settings such as a new memory limit.
+
+Pingu does not create a public tunnel. The displayed addresses are local-network addresses.
+
+## Memory management
+
+**Automatic (recommended)** detects physical RAM and chooses a conservative maximum heap while preserving at least 2 GB for Windows whenever the machine has enough memory. Typical automatic limits are 2 GB on a 4 GB computer, 4 GB on 8 GB, 6 GB on 16 GB, and 8 GB on 32 GB or more.
+
+**Manual** accepts a maximum heap in GB only when the value is positive and leaves the safety reserve available. Pingu uses a moderate `-Xms` and the selected value as `-Xmx`. Changes are persisted in `server/config.json` and apply on the next server start or restart; a running JVM is never resized.
+
+## Console and command catalog
+
+The Console tab contains a bounded live log and a searchable list of common Paper/Minecraft commands. Selecting an item only copies its editable syntax into the input field. Complete placeholders such as `<player>`, then press Enter or select **Send**. Sensitive commands are visually identified and require confirmation when sent or triggered by a direct UI action.
 
 ## Repository structure
 
@@ -61,6 +83,7 @@ Pingu-Minecraft-Server-Manager/
 ├── scripts/build-release.ps1
 ├── internal/
 │   ├── api/
+│   ├── commands/
 │   ├── gui/
 │   ├── i18n/
 │   ├── manager/
@@ -115,14 +138,50 @@ go build -buildvcs=false -trimpath -ldflags="-H=windowsgui -s -w -extldflags '-s
 
 The release script and workflow also inspect the executable with `objdump.exe`. The build fails if `pingu.exe` imports `libmcfgthread-2.dll`, `libgcc_s_seh-1.dll`, `libstdc++-6.dll`, or `libwinpthread-1.dll`.
 
+The Java archive is pinned and verified before extraction. The expected SHA-256 for `OpenJDK25U-jre_x64_windows_hotspot_25.0.4.1_1.zip` is:
+
+```text
+4c95451cea98556def2c54f7782933f52a26d4a36bd85e1d59f0364464828b07
+```
+
 ## Tests
 
 ```powershell
 go mod download
 go test -buildvcs=false -tags ci ./...
 go vet -buildvcs=false -tags ci ./...
-go test -race -buildvcs=false ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
+go test -race -buildvcs=false ./internal/commands ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
 ```
+
+## Verify a downloaded release
+
+Download `SHA256SUMS.txt` beside the installer or portable ZIP, then run:
+
+```powershell
+(Get-FileHash .\Pingu-Setup-3.0.0-Windows-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\SHA256SUMS.txt
+```
+
+The values must match before running the file.
+
+## Create a release from a tag
+
+After the branch is reviewed and the Windows workflow build succeeds, create and push a version tag:
+
+```powershell
+git tag -a v3.1.0 -m "Pingu v3.1.0"
+git push origin v3.1.0
+```
+
+The tag workflow derives version `3.1.0`, validates tests/static linkage/runtime checksum, and publishes only the installer, portable ZIP, and checksum file. A manual workflow run creates downloadable workflow artifacts but does not publish a GitHub Release.
+
+## Troubleshooting
+
+- **Windows reports a missing MinGW DLL:** use an official installer/portable artifact. Local builds must pass the `objdump.exe` static-link check.
+- **Java 25 was not found:** reinstall the complete package and verify `runtime\bin\java.exe` exists beside the installed executable.
+- **Players cannot connect:** confirm PLAY shows both listeners as ON, use the displayed ports, and check Windows Firewall/router forwarding.
+- **A command was rejected:** make sure Paper is running and replace every `<placeholder>` before sending.
+- **Settings do not take effect:** restart the Paper server. Memory changes intentionally do not modify a running JVM.
 
 ## User data and networking
 
