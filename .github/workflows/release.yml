@@ -32,14 +32,41 @@ jobs:
           go-version: "1.25.x"
           cache: true
 
-      - name: Install Windows build tools
+     - name: Install Windows build tools
         shell: powershell
         run: |
           choco install mingw innosetup --no-progress -y
-          $gcc = Get-ChildItem C:\ProgramData\chocolatey -Filter gcc.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $gcc) { throw 'gcc.exe não foi encontrado após instalar o MinGW.' }
-          Add-Content $env:GITHUB_PATH (Split-Path $gcc.FullName)
 
+          $mingwCandidates = @(
+            'C:\ProgramData\mingw64\mingw64\bin',
+            'C:\ProgramData\mingw64\bin',
+            'C:\tools\mingw64\bin'
+          )
+
+          $mingwBin = $mingwCandidates |
+            Where-Object { Test-Path (Join-Path $_ 'gcc.exe') } |
+            Select-Object -First 1
+
+          if (-not $mingwBin) {
+            $gcc = Get-ChildItem 'C:\ProgramData\mingw64', 'C:\tools' `
+              -Filter gcc.exe -File -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($gcc) {
+              $mingwBin = $gcc.DirectoryName
+            }
+          }
+
+          if (-not $mingwBin) {
+            throw 'gcc.exe was not found after installing MinGW.'
+          }
+
+          $env:Path = "$mingwBin;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $mingwBin
+
+          gcc.exe --version
+          objdump.exe --version
+          
       - name: Build application and installer
         shell: powershell
         run: |
