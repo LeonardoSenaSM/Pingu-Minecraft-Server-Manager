@@ -31,8 +31,8 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-
-     - name: Install Windows build tools
+          
+      - name: Install Windows build tools
         shell: powershell
         run: |
           choco install mingw innosetup --no-progress -y
