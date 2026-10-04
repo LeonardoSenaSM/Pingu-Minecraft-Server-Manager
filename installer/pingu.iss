@@ -23,6 +23,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupLogging=yes
+SetupIconFile=..\assets\icon.ico
 CloseApplications=yes
 RestartApplications=no
 
@@ -42,7 +43,7 @@ Source: "..\dist\app\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Pingu"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{group}\Uninstall Pingu / Desinstalar Pingu"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallProgram,Pingu}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Pingu"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

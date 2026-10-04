@@ -58,6 +58,15 @@ try {
     }
 
     $executable = Join-Path $stage 'pingu.exe'
+    $iconFile = Join-Path $projectRoot 'assets\icon.ico'
+    if (-not (Test-Path -LiteralPath $iconFile)) {
+        throw "Missing Windows icon: $iconFile"
+    }
+    Write-Host 'Embedding the Pingu icon in the Windows executable...'
+    go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico $iconFile -o (Join-Path $projectRoot 'rsrc_windows_amd64.syso')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Icon resource generation failed: $LASTEXITCODE"
+    }
     $linkerFlags = "$staticLinkerFlags -X main.appVersion=$Version"
     Write-Host "Compilando pingu.exe com CGO_ENABLED=1, CC=gcc e vínculo estático do runtime MinGW..."
     go build -buildvcs=false -trimpath -ldflags $linkerFlags -o $executable .

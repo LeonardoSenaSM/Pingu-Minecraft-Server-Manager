@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,8 +21,12 @@ const (
 
 var appVersion = "development"
 
+//go:embed assets/icon.png
+var appIconPNG []byte
+
 func main() {
 	application := app.NewWithID(appID)
+	application.SetIcon(fyne.NewStaticResource("pingu.png", appIconPNG))
 	application.Settings().SetTheme(theme.DarkTheme())
 	window := application.NewWindow(appTitle)
 	window.Resize(fyne.NewSize(1180, 760))
