@@ -46,13 +46,18 @@ Pingu requires Java **25 or newer** to start PaperMC.
 - PaperMC startup on the first incoming packet.
 - Graceful shutdown after 15 minutes without players or traffic.
 - Immediate proxy shutdown through context cancellation and socket closure.
-- Asynchronous dependency downloads with progress and cancellation.
+- Transactional Paper and plugin updates: every version is resolved first, files are downloaded to a staging folder, verified by checksum (when the source publishes one) and validated as JARs; on any failure the previous files stay in place.
+- Replaced JARs are kept in `server/backups/jars-<date>` (the 3 most recent are kept).
+- Automatic ZIP backup of the world (`server/backups/world-<from>-para-<to>-<date>.zip`) before switching Minecraft versions.
+- Switching versions updates the whole set (Paper + plugins); optional plugins without a compatible build are kept, never replaced with a build for another Minecraft version.
+- Explicit Minecraft EULA acceptance before the first start.
+- Java starts without a separate console window, and stopping has a deadline: if Paper does not exit within 90 s after `stop`, it is terminated and the reason is logged.
 - Console commands, OP, kick, temporary ban, and pardon actions.
 - Searchable bilingual command catalog that fills the console input without executing automatically.
 - Automatic conservative JVM memory sizing or a validated manual heap limit.
 - Operational overview with server identity, endpoints, players, configured memory, and uptime.
 - Live English and Brazilian Portuguese switching.
-- Circular console buffer limited to 2,500 entries.
+- Circular console buffer limited to 2,500 entries; the screen shows the last 1,000 lines.
 - Persistent settings in `server/config.json`.
 
 ## Start, stop, and connect
@@ -63,6 +68,8 @@ Pingu requires Java **25 or newer** to start PaperMC.
 4. The Paper process starts on the first incoming Java/Bedrock packet. Use **Stop Server** for a graceful save and shutdown, or **Restart Server** to apply settings such as a new memory limit.
 
 Pingu does not create a public tunnel. The displayed addresses are local-network addresses.
+
+Because Pingu's proxy hands every connection to Paper from `127.0.0.1`, Pingu sets `connection-throttle: 0` in `bukkit.yml`; otherwise Paper would reject a player who joins right after another one. For the same reason, IP bans cannot tell players apart — ban by name instead.
 
 ## Memory management
 
@@ -153,6 +160,8 @@ go vet -buildvcs=false -tags ci ./...
 go test -race -buildvcs=false ./internal/commands ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
 ```
 
+Lifecycle tests use a shell-script "fake Java" and run outside Windows. GUI smoke tests are opt-in (`go test -tags guitest ./internal/gui`) because Fyne's test driver is not safe for concurrent drawing.
+
 ## Verify a downloaded release
 
 Download `SHA256SUMS.txt` beside the installer or portable ZIP, then run:
@@ -179,6 +188,9 @@ The tag workflow derives version `3.1.0`, validates tests/static linkage/runtime
 
 - **Windows reports a missing MinGW DLL:** use an official installer/portable artifact. Local builds must pass the `objdump.exe` static-link check.
 - **Java 25 was not found:** reinstall the complete package and verify `runtime\bin\java.exe` exists beside the installed executable.
+- **The log shows `0xC000013A`:** the JVM received an interrupt (Ctrl+C, Windows logoff or shutdown). Since 3.2, Java no longer opens its own console window that could be closed by mistake.
+- **An update failed:** nothing was replaced. JARs from completed updates are kept in `server/backups`.
+- **I need the world back on the previous version:** with Pingu closed, rename the current `world*` folders and extract the ZIP from `server/backups` into the `server` folder.
 - **Players cannot connect:** confirm PLAY shows both listeners as ON, use the displayed ports, and check Windows Firewall/router forwarding.
 - **A command was rejected:** make sure Paper is running and replace every `<placeholder>` before sending.
 - **Settings do not take effect:** restart the Paper server. Memory changes intentionally do not modify a running JVM.

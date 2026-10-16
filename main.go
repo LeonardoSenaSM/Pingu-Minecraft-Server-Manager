@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/theme"
 
+	"mineserver/internal/api"
 	"mineserver/internal/gui"
 	"mineserver/internal/manager"
 )
@@ -25,6 +26,7 @@ var appVersion = "development"
 var appIconPNG []byte
 
 func main() {
+	api.SetAppVersion(appVersion)
 	application := app.NewWithID(appID)
 	application.SetIcon(fyne.NewStaticResource("pingu.png", appIconPNG))
 	application.Settings().SetTheme(theme.DarkTheme())

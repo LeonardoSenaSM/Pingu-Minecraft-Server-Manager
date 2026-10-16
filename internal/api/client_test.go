@@ -33,7 +33,7 @@ func TestDownloadIsAtomicOnCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	client := NewClient(time.Minute)
-	err := client.Download(ctx, server.URL, destination, func(downloaded, _ int64) {
+	err := client.Download(ctx, Artifact{Name: "teste", URL: server.URL}, destination, func(downloaded, _ int64) {
 		if downloaded >= 4096 {
 			cancel()
 		}

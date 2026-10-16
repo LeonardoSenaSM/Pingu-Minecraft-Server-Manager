@@ -57,7 +57,7 @@ func TestSendCommandWritesToServerStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.serverStdin = writer
+	m.proc = newJavaProcess(nil, writer)
 	if err := m.SendCommand("/say hello"); err != nil {
 		t.Fatal(err)
 	}

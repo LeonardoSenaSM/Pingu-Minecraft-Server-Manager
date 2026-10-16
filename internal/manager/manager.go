@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,6 +23,14 @@ const (
 	maxLogEntries    = 2500
 )
 
+var (
+	// gracefulStopTimeout é o prazo para o Paper salvar o mundo e sair depois
+	// de "stop". Mundos grandes podem levar bem mais que alguns segundos.
+	gracefulStopTimeout = 90 * time.Second
+	// closeStopTimeout é o prazo ao fechar o Pingu.
+	closeStopTimeout = 60 * time.Second
+)
+
 type Manager struct {
 	baseDir    string
 	serverDir  string
@@ -41,11 +47,9 @@ type Manager struct {
 	settings      Settings
 	serverState   string
 	ports         proxy.Ports
-	serverCmd     *exec.Cmd
-	serverStdin   io.WriteCloser
-	serverDone    chan struct{}
-	serverStarted time.Time
+	proc          *javaProcess
 	standbyOnExit bool
+	installed     string
 	players       map[string]time.Time
 	knownPlayers  map[string]time.Time
 	managedBans   []BanEntry
@@ -98,7 +102,7 @@ func New(baseDir string) *Manager {
 		CanIdle: func() bool {
 			m.mu.RLock()
 			defer m.mu.RUnlock()
-			return m.serverCmd != nil && len(m.players) == 0
+			return m.proc != nil && len(m.players) == 0
 		},
 		OnIdle: func() {
 			m.Log("info", "lifecycle", "15 minutos sem jogadores ou tráfego; entrando em espera", nil)
@@ -129,6 +133,7 @@ func (m *Manager) Initialize() error {
 			return
 		}
 		m.loadSettings()
+		m.reloadInstalledVersion()
 		if m.memoryError != nil {
 			m.Log("warning", "memory", "não foi possível detectar a RAM física; usando 4 GB como referência segura", m.memoryError)
 		}
@@ -242,7 +247,11 @@ func (m *Manager) Status() Status {
 	state := m.serverState
 	settings := m.settings
 	playersOnline := len(m.players)
-	started := m.serverStarted
+	started := time.Time{}
+	if m.proc != nil {
+		started = m.proc.started
+	}
+	installed := m.installed
 	m.mu.RUnlock()
 	plan, planErr := BuildMemoryPlan(m.totalMemoryGB, settings.MemoryMode, settings.MemoryLimitGB)
 	if planErr != nil {
@@ -259,7 +268,7 @@ func (m *Manager) Status() Status {
 		JavaPort:    ports.JavaPublic,
 		BedrockPort: ports.BedrockPublic, LocalIPs: ports.LocalIPs,
 		ActiveSessions: m.proxy.SessionCount(),
-		ServerName:     settings.ServerName, MinecraftVersion: m.InstalledPaperVersion(),
+		ServerName:     settings.ServerName, MinecraftVersion: installed,
 		PlayersOnline: playersOnline, MemoryMode: plan.Mode, TotalMemoryGB: plan.TotalGB,
 		MemoryMaximumGB: plan.MaximumGB, Uptime: uptime,
 	}
@@ -335,10 +344,22 @@ func (m *Manager) Log(level, component, message string, err error) {
 }
 
 func (m *Manager) LogText() string {
+	return m.LogTail(maxLogEntries)
+}
+
+// LogTail devolve as últimas n linhas do histórico, da mais antiga para a mais
+// recente. O console usa uma janela menor que o histórico completo para não
+// redesenhar milhares de linhas a cada atualização.
+func (m *Manager) LogTail(n int) string {
 	m.mu.RLock()
-	lines := make([]string, len(m.logs))
-	for index := range m.logs {
-		entryIndex := (m.logStart + index) % len(m.logs)
+	total := len(m.logs)
+	if n <= 0 || n > total {
+		n = total
+	}
+	lines := make([]string, n)
+	first := total - n
+	for index := 0; index < n; index++ {
+		entryIndex := (m.logStart + first + index) % total
 		lines[index] = m.logs[entryIndex].String()
 	}
 	m.mu.RUnlock()
@@ -503,7 +524,7 @@ func (m *Manager) Close() error {
 		m.mu.Unlock()
 		m.processMu.Unlock()
 		proxyErr := m.proxy.Close()
-		serverErr := m.shutdownProcess(12 * time.Second)
+		serverErr := m.shutdownProcess(closeStopTimeout)
 		m.cancel()
 		m.wg.Wait()
 		m.closeErr = errors.Join(proxyErr, serverErr)
@@ -511,34 +532,49 @@ func (m *Manager) Close() error {
 	return m.closeErr
 }
 
+func (m *Manager) currentProcess() *javaProcess {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.proc
+}
+
+// shutdownProcess pede parada graciosa e espera até timeout; depois disso,
+// finaliza a JVM à força.
 func (m *Manager) shutdownProcess(timeout time.Duration) error {
 	m.processMu.Lock()
-	m.mu.RLock()
-	cmd := m.serverCmd
-	stdin := m.serverStdin
-	done := m.serverDone
-	m.mu.RUnlock()
-	if cmd == nil {
+	proc := m.currentProcess()
+	if proc == nil {
 		m.processMu.Unlock()
 		return nil
 	}
-	if stdin != nil {
-		if _, err := io.WriteString(stdin, "save-all\nstop\n"); err != nil {
-			m.Log("warning", "paper", "falha ao enviar parada graciosa", err)
-		}
+	if err := proc.Write("save-all\nstop\n"); err != nil && !errors.Is(err, errProcessExited) {
+		m.Log("warning", "paper", "falha ao enviar parada graciosa", err)
 	}
 	m.processMu.Unlock()
+	return m.awaitExit(proc, timeout)
+}
+
+func (m *Manager) awaitExit(proc *javaProcess, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case <-done:
+	case <-proc.Done():
 		return nil
 	case <-timer.C:
-		if cmd.Process != nil {
-			if err := cmd.Process.Kill(); err != nil {
-				return fmt.Errorf("forçar encerramento do Paper: %w", err)
-			}
+		m.Log("warning", "paper", fmt.Sprintf("Paper não encerrou em %s; finalizando à força", timeout), nil)
+		if err := proc.Kill(); err != nil {
+			return fmt.Errorf("forçar encerramento do Paper: %w", err)
 		}
-		return errors.New("Paper não encerrou no prazo e foi finalizado")
+		select {
+		case <-proc.Done():
+		case <-time.After(15 * time.Second):
+			return errors.New("o processo do Paper não respondeu nem à finalização forçada")
+		}
+		return errors.New("Paper não encerrou no prazo e foi finalizado à força")
 	}
+}
+
+// SetAPIEndpoints redireciona as consultas de download (usado em testes).
+func (m *Manager) SetAPIEndpoints(endpoints api.Endpoints) {
+	m.api.SetEndpoints(endpoints)
 }

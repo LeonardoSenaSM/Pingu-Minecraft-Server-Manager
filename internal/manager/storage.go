@@ -40,12 +40,6 @@ func (m *Manager) ensureDirectories() error {
 			return fmt.Errorf("criar pasta %s: %w", directory, err)
 		}
 	}
-	eula := filepath.Join(m.serverDir, "eula.txt")
-	if _, err := os.Stat(eula); errors.Is(err, os.ErrNotExist) {
-		if err := writeBytesAtomic(eula, []byte("# Gerado pelo Pingu\neula=true\n")); err != nil {
-			return fmt.Errorf("criar eula.txt: %w", err)
-		}
-	}
 	return m.updateServerProperties(m.paperPort())
 }
 
@@ -87,16 +81,35 @@ func (m *Manager) loadSettings() {
 	m.notifySettings()
 }
 
+// InstalledPaperVersion devolve a versão instalada guardada em memória; o
+// arquivo só é lido na inicialização e regravado após cada instalação.
 func (m *Manager) InstalledPaperVersion() string {
-	data, err := os.ReadFile(m.paperInstallationPath())
-	if err != nil {
-		return ""
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.installed
+}
+
+func (m *Manager) reloadInstalledVersion() {
+	version := ""
+	if data, err := os.ReadFile(m.paperInstallationPath()); err == nil {
+		var installation PaperInstallation
+		if json.Unmarshal(data, &installation) == nil {
+			version = installation.Version
+		}
 	}
-	var installation PaperInstallation
-	if err := json.Unmarshal(data, &installation); err != nil || installation.Version == "" {
-		return ""
+	m.mu.Lock()
+	m.installed = version
+	m.mu.Unlock()
+}
+
+func (m *Manager) writeInstallation(installation PaperInstallation) error {
+	if err := writeJSONAtomic(m.paperInstallationPath(), installation); err != nil {
+		return err
 	}
-	return installation.Version
+	m.mu.Lock()
+	m.installed = installation.Version
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) updateServerProperties(paperPort int) error {

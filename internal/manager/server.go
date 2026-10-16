@@ -1,17 +1,12 @@
 package manager
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,13 +15,7 @@ import (
 	"mineserver/internal/commands"
 )
 
-var (
-	joinPattern        = regexp.MustCompile(`:\s+([.A-Za-z0-9_]{1,32}) joined the game`)
-	leavePattern       = regexp.MustCompile(`:\s+([.A-Za-z0-9_]{1,32}) left the game`)
-	javaVersionPattern = regexp.MustCompile(`(?im)(?:openjdk|java) version "(?:1\.)?([0-9]+)`)
-)
-
-const minimumJavaFeature = 25
+var errUpdateInProgress = errors.New("uma atualização de arquivos está em andamento; aguarde terminar para iniciar o servidor")
 
 func (m *Manager) StartAll(ctx context.Context) error {
 	if err := m.Initialize(); err != nil {
@@ -34,6 +23,9 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 	if err := m.ctx.Err(); err != nil {
 		return err
+	}
+	if !m.EULAAccepted() {
+		return ErrEULANotAccepted
 	}
 	if !m.dependenciesPresent() {
 		m.Log("info", "dependencies", "dependências ausentes; iniciando download", nil)
@@ -51,7 +43,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	m.ports = ports
-	running := m.serverCmd != nil
+	running := m.proc != nil
 	m.mu.Unlock()
 	if !running {
 		m.setServerState(StateStandby)
@@ -61,185 +53,33 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) dependenciesPresent() bool {
-	paths := []string{
-		filepath.Join(m.serverDir, "server.jar"),
-		filepath.Join(m.pluginsDir, "Geyser-Spigot.jar"),
-		filepath.Join(m.pluginsDir, "Floodgate-Spigot.jar"),
-		filepath.Join(m.pluginsDir, "Chunky.jar"),
-		filepath.Join(m.pluginsDir, "CoreProtect.jar"),
-	}
-	for _, path := range paths {
-		if info, err := os.Stat(path); err != nil || info.Size() == 0 {
-			return false
-		}
-	}
-	return true
-}
-
-func (m *Manager) AvailablePaperVersions(ctx context.Context) ([]string, error) {
-	return m.api.PaperVersions(ctx)
-}
-
-func (m *Manager) UpdateDependencies(ctx context.Context) (result error) {
-	m.dependenciesMu.Lock()
-	defer m.dependenciesMu.Unlock()
-	defer func() {
-		progress := Progress{Done: true, TotalTasks: 5}
-		if result != nil {
-			progress.Err = result.Error()
-		}
-		m.notifyProgress(progress)
-	}()
-	if ctx == nil {
-		ctx = m.ctx
-	}
-	if err := context.Cause(ctx); err != nil {
-		return err
-	}
-	m.mu.RLock()
-	running := m.serverCmd != nil
-	m.mu.RUnlock()
-	if running {
-		return errors.New("pare o servidor antes de atualizar os arquivos")
-	}
-	if err := m.ensureDirectories(); err != nil {
-		return err
-	}
-	m.notifyProgress(Progress{Task: "PaperMC", TotalTasks: 5, Indeterminate: true})
-	paperURL, paperVersion, err := m.api.ResolvePaper(ctx, m.SelectedVersion())
-	if err != nil {
-		return err
-	}
-	type task struct {
-		name string
-		path string
-		url  func(context.Context) (string, error)
-	}
-	tasks := []task{
-		{"PaperMC", filepath.Join(m.serverDir, "server.jar"), func(context.Context) (string, error) { return paperURL, nil }},
-		{"Geyser-Spigot", filepath.Join(m.pluginsDir, "Geyser-Spigot.jar"), func(context.Context) (string, error) {
-			return "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot", nil
-		}},
-		{"Floodgate-Spigot", filepath.Join(m.pluginsDir, "Floodgate-Spigot.jar"), func(context.Context) (string, error) {
-			return "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot", nil
-		}},
-		{"Chunky", filepath.Join(m.pluginsDir, "Chunky.jar"), func(ctx context.Context) (string, error) {
-			return m.api.ModrinthDownload(ctx, "chunky", paperVersion)
-		}},
-		{"CoreProtect", filepath.Join(m.pluginsDir, "CoreProtect.jar"), func(ctx context.Context) (string, error) {
-			return m.api.ModrinthDownload(ctx, "coreprotect", paperVersion)
-		}},
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	errCh := make(chan error, len(tasks))
-	var wait sync.WaitGroup
-	var completedMu sync.Mutex
-	completed := 0
-	for _, item := range tasks {
-		item := item
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			downloadURL, err := item.url(ctx)
-			if err != nil {
-				errCh <- fmt.Errorf("localizar %s: %w", item.name, err)
-				cancel()
-				return
-			}
-			m.Log("info", "download", "baixando "+item.name, nil)
-			err = m.api.Download(ctx, downloadURL, item.path, func(downloaded, total int64) {
-				completedMu.Lock()
-				current := completed
-				completedMu.Unlock()
-				m.notifyProgress(Progress{Task: item.name, Downloaded: downloaded, Total: total, Completed: current, TotalTasks: len(tasks), Indeterminate: total <= 0})
-			})
-			if err != nil {
-				errCh <- fmt.Errorf("baixar %s: %w", item.name, err)
-				cancel()
-				return
-			}
-			completedMu.Lock()
-			completed++
-			current := completed
-			completedMu.Unlock()
-			m.notifyProgress(Progress{Task: item.name, Completed: current, TotalTasks: len(tasks)})
-		}()
-	}
-	wait.Wait()
-	close(errCh)
-	var downloadErrors []error
-	for err := range errCh {
-		downloadErrors = append(downloadErrors, err)
-	}
-	if len(downloadErrors) > 0 {
-		return errors.Join(downloadErrors...)
-	}
-	if err := writeJSONAtomic(m.paperInstallationPath(), PaperInstallation{Version: paperVersion, DownloadedAt: time.Now()}); err != nil {
-		return err
-	}
-	if err := m.configureGeyser(m.geyserPort(), m.paperPort()); err != nil {
-		return err
-	}
-	m.Log("info", "dependencies", "todas as dependências foram atualizadas", nil)
-	m.notifyFiles()
-	return nil
-}
-
-func (m *Manager) UpdatePaperVersion(ctx context.Context) (result error) {
-	m.dependenciesMu.Lock()
-	defer m.dependenciesMu.Unlock()
-	defer func() {
-		progress := Progress{Done: true, TotalTasks: 1}
-		if result != nil {
-			progress.Err = result.Error()
-		}
-		m.notifyProgress(progress)
-	}()
-	m.mu.RLock()
-	running := m.serverCmd != nil
-	m.mu.RUnlock()
-	if running {
-		return errors.New("pare o servidor antes de trocar a versão")
-	}
-	if err := m.ensureDirectories(); err != nil {
-		return err
-	}
-	downloadURL, version, err := m.api.ResolvePaper(ctx, m.SelectedVersion())
-	if err != nil {
-		return err
-	}
-	destination := filepath.Join(m.serverDir, "server.jar")
-	if err := m.api.Download(ctx, downloadURL, destination, func(downloaded, total int64) {
-		m.notifyProgress(Progress{Task: "PaperMC " + version, Downloaded: downloaded, Total: total, TotalTasks: 1, Indeterminate: total <= 0})
-	}); err != nil {
-		return err
-	}
-	if err := writeJSONAtomic(m.paperInstallationPath(), PaperInstallation{Version: version, DownloadedAt: time.Now()}); err != nil {
-		return err
-	}
-	m.Log("info", "dependencies", "PaperMC "+version+" instalado", nil)
-	m.notifyFiles()
-	return nil
-}
-
+// StartServer inicia a JVM. Não espera downloads: se uma atualização estiver
+// em andamento, falha na hora para não deixar uma conexão de jogador presa.
 func (m *Manager) StartServer(ctx context.Context) error {
 	m.processMu.Lock()
 	defer m.processMu.Unlock()
+	if !m.dependenciesMu.TryLock() {
+		return errUpdateInProgress
+	}
+	defer m.dependenciesMu.Unlock()
 	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	closed, running := m.closed, m.proc != nil
+	m.mu.RUnlock()
+	if closed {
 		return context.Canceled
 	}
-	if m.serverCmd != nil {
-		m.mu.RUnlock()
+	if running {
 		return nil
 	}
-	m.mu.RUnlock()
+	if !m.EULAAccepted() {
+		return ErrEULANotAccepted
+	}
 	jar := filepath.Join(m.serverDir, "server.jar")
 	if info, err := os.Stat(jar); err != nil || info.Size() == 0 {
 		return errors.New("server.jar ausente; atualize as dependências")
+	}
+	if err := m.prepareServerConfig(); err != nil {
+		m.Log("warning", "config", "não foi possível ajustar bukkit.yml", err)
 	}
 	javaPath, javaFeature, err := m.findJavaExecutable()
 	if err != nil {
@@ -266,56 +106,42 @@ func (m *Manager) StartServer(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	done := make(chan struct{})
+	if err := cmd.Start(); err != nil {
+		m.setServerState(StateStopped)
+		return err
+	}
+	proc := newJavaProcess(cmd, stdin)
+	proc.started = time.Now()
 	m.mu.Lock()
-	m.serverCmd = cmd
-	m.serverStdin = stdin
-	m.serverDone = done
+	m.proc = proc
 	m.serverState = StateStarting
 	m.standbyOnExit = false
 	m.mu.Unlock()
 	m.notifyStatus()
-	if err := cmd.Start(); err != nil {
-		m.mu.Lock()
-		m.serverCmd = nil
-		m.serverStdin = nil
-		m.serverDone = nil
-		m.serverStarted = time.Time{}
-		m.serverState = StateStopped
-		m.mu.Unlock()
-		close(done)
-		m.notifyStatus()
-		return err
-	}
-	m.mu.Lock()
-	m.serverStarted = time.Now()
-	m.mu.Unlock()
 	m.Log("info", "paper", fmt.Sprintf("iniciando PaperMC com Java %d (%s), modo de memória %s, RAM física %d GB, heap -Xms%dG/-Xmx%dG", javaFeature, javaPath, plan.Mode, plan.TotalGB, plan.InitialGB, plan.MaximumGB), nil)
-	m.goTracked(func(context.Context) { m.consumeProcessOutput("Paper/stdout", stdout) })
-	m.goTracked(func(context.Context) { m.consumeProcessOutput("Paper/stderr", stderr) })
+
+	// cmd.Wait fecha os pipes; por isso só é chamado depois que as duas
+	// leituras terminam. Sem isso, as últimas linhas (muitas vezes a causa de
+	// uma queda) podiam se perder.
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() { defer readers.Done(); m.consumeProcessOutput("Paper/stdout", stdout) }()
+	go func() { defer readers.Done(); m.consumeProcessOutput("Paper/stderr", stderr) }()
 	m.goTracked(func(managerCtx context.Context) {
 		select {
 		case <-managerCtx.Done():
-			m.mu.RLock()
-			current := m.serverCmd == cmd
-			processStdin := m.serverStdin
-			m.mu.RUnlock()
-			if current && processStdin != nil {
-				if _, writeErr := io.WriteString(processStdin, "save-all\nstop\n"); writeErr != nil {
-					m.Log("warning", "paper", "falha ao parar processo durante cancelamento", writeErr)
-				}
+			if err := proc.Write("save-all\nstop\n"); err != nil && !errors.Is(err, errProcessExited) {
+				m.Log("warning", "paper", "falha ao parar processo durante cancelamento", err)
 			}
-		case <-done:
+		case <-proc.Done():
 		}
 	})
-	m.goTracked(func(context.Context) {
+	go func() {
+		readers.Wait()
 		waitErr := cmd.Wait()
 		m.mu.Lock()
-		if m.serverCmd == cmd {
-			m.serverCmd = nil
-			m.serverStdin = nil
-			m.serverDone = nil
-			m.serverStarted = time.Time{}
+		if m.proc == proc {
+			m.proc = nil
 			if m.standbyOnExit {
 				m.serverState = StateStandby
 			} else {
@@ -324,7 +150,7 @@ func (m *Manager) StartServer(ctx context.Context) error {
 			m.players = make(map[string]time.Time)
 		}
 		m.mu.Unlock()
-		close(done)
+		proc.markExited()
 		if waitErr != nil {
 			m.Log("error", "paper", describeProcessExit(waitErr), waitErr)
 		} else {
@@ -332,259 +158,90 @@ func (m *Manager) StartServer(ctx context.Context) error {
 		}
 		m.notifyStatus()
 		m.notifyPlayers()
-	})
+	}()
 	return nil
 }
 
-func (m *Manager) findJavaExecutable() (string, int, error) {
-	binary := "java"
-	if runtime.GOOS == "windows" {
-		binary = "java.exe"
-	}
-	candidates := make([]string, 0, 3)
-	if absoluteBase, err := filepath.Abs(m.baseDir); err == nil {
-		candidates = append(candidates, filepath.Join(absoluteBase, "runtime", "bin", binary))
-	}
-	if executable, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "runtime", "bin", binary))
-	}
-	if systemJava, err := exec.LookPath("java"); err == nil {
-		candidates = append(candidates, systemJava)
-	}
-
-	seen := make(map[string]bool)
-	problems := make([]string, 0)
-	for _, candidate := range candidates {
-		clean := filepath.Clean(candidate)
-		key := strings.ToLower(clean)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		if info, err := os.Stat(clean); err != nil || info.IsDir() {
-			continue
-		}
-		feature, err := inspectJavaFeature(clean)
-		if err != nil {
-			problems = append(problems, filepath.Base(clean)+": "+err.Error())
-			continue
-		}
-		if feature < minimumJavaFeature {
-			problems = append(problems, fmt.Sprintf("%s: Java %d é inferior ao mínimo %d", filepath.Base(clean), feature, minimumJavaFeature))
-			continue
-		}
-		return clean, feature, nil
-	}
-	detail := ""
-	if len(problems) > 0 {
-		detail = " (" + strings.Join(problems, "; ") + ")"
-	}
-	return "", 0, fmt.Errorf("Java %d ou superior não encontrado; reinstale o Pingu completo ou instale um Java compatível%s", minimumJavaFeature, detail)
-}
-
-func inspectJavaFeature(javaPath string) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	versionCmd := exec.CommandContext(ctx, javaPath, "-version")
-	configureChildProcess(versionCmd)
-	output, err := versionCmd.CombinedOutput()
-	if ctx.Err() != nil {
-		return 0, errors.New("tempo limite ao verificar a versão")
-	}
-	if err != nil {
-		return 0, fmt.Errorf("não foi possível executar -version: %w", err)
-	}
-	return parseJavaFeature(string(output))
-}
-
-func parseJavaFeature(output string) (int, error) {
-	match := javaVersionPattern.FindStringSubmatch(output)
-	if len(match) != 2 {
-		return 0, errors.New("saída de versão não reconhecida")
-	}
-	feature, err := strconv.Atoi(match[1])
-	if err != nil || feature < 1 {
-		return 0, errors.New("versão Java inválida")
-	}
-	return feature, nil
-}
-
+// StopServer pede a parada graciosa e retorna. Um vigia finaliza a JVM se ela
+// não sair dentro de gracefulStopTimeout.
 func (m *Manager) StopServer(standby bool) error {
 	m.processMu.Lock()
-	defer m.processMu.Unlock()
 	m.mu.Lock()
-	if m.serverCmd == nil {
+	proc := m.proc
+	if proc == nil {
 		if standby {
 			m.serverState = StateStandby
 		} else {
 			m.serverState = StateStopped
 		}
 		m.mu.Unlock()
+		m.processMu.Unlock()
 		m.notifyStatus()
 		return nil
 	}
 	m.standbyOnExit = standby
-	stdin := m.serverStdin
 	m.mu.Unlock()
-	if stdin == nil {
-		return errors.New("entrada do processo indisponível")
-	}
-	if _, err := io.WriteString(stdin, "save-all\nstop\n"); err != nil {
+	m.processMu.Unlock()
+
+	err := proc.Write("save-all\nstop\n")
+	switch {
+	case err == nil, errors.Is(err, errProcessExited):
+	case errors.Is(err, errStdinBlocked):
+		m.Log("error", "paper", "o Paper não responde a comandos; finalizando à força", err)
+		return proc.Kill()
+	default:
 		return fmt.Errorf("enviar parada ao Paper: %w", err)
 	}
+	m.goTracked(func(ctx context.Context) {
+		timer := time.NewTimer(gracefulStopTimeout)
+		defer timer.Stop()
+		select {
+		case <-proc.Done():
+		case <-ctx.Done():
+		case <-timer.C:
+			m.Log("warning", "paper", fmt.Sprintf("Paper não encerrou em %s após \"stop\"; finalizando à força", gracefulStopTimeout), nil)
+			if err := proc.Kill(); err != nil {
+				m.Log("error", "paper", "falha ao finalizar o Paper", err)
+			}
+		}
+	})
 	return nil
 }
 
 func (m *Manager) RestartServer(ctx context.Context) error {
-	m.mu.RLock()
-	running := m.serverCmd != nil
-	done := m.serverDone
-	m.mu.RUnlock()
-	if !running || done == nil {
+	proc := m.currentProcess()
+	if proc == nil {
 		return errors.New("o servidor não está em execução")
 	}
 	if err := m.StopServer(false); err != nil {
 		return err
 	}
-	timer := time.NewTimer(30 * time.Second)
+	timer := time.NewTimer(gracefulStopTimeout + 20*time.Second)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return context.Cause(ctx)
 	case <-timer.C:
 		return errors.New("tempo limite aguardando o encerramento do servidor")
-	case <-done:
+	case <-proc.Done():
 	}
 	return m.StartServer(ctx)
 }
 
+// SendCommand envia um comando ao console do Paper sem segurar o lock global
+// durante a escrita.
 func (m *Manager) SendCommand(command string) error {
 	if err := commands.ValidateInput(command); err != nil {
 		return err
 	}
 	command = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
-	m.mu.Lock()
-	stdin := m.serverStdin
-	if stdin == nil {
-		m.mu.Unlock()
-		return errors.New("o servidor não está em execução")
+	proc := m.currentProcess()
+	if proc == nil {
+		return errProcessExited
 	}
-	_, err := io.WriteString(stdin, command+"\n")
-	m.mu.Unlock()
-	if err != nil {
+	if err := proc.Write(command + "\n"); err != nil {
 		return err
 	}
 	m.Log("info", "console", "> "+command, nil)
 	return nil
-}
-
-func (m *Manager) consumeProcessOutput(source string, reader io.Reader) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		m.Log("info", source, line, nil)
-		m.parseServerLine(line)
-	}
-	if err := scanner.Err(); err != nil {
-		m.Log("error", source, "falha ao ler saída do processo", err)
-	}
-}
-
-func (m *Manager) parseServerLine(line string) {
-	if strings.Contains(line, "Done (") && strings.Contains(line, "For help, type") {
-		m.setServerState(StateRunning)
-	}
-	if match := joinPattern.FindStringSubmatch(line); len(match) == 2 {
-		m.mu.Lock()
-		m.players[match[1]] = time.Now()
-		m.knownPlayers[match[1]] = time.Now()
-		m.mu.Unlock()
-		m.notifyPlayers()
-	}
-	if match := leavePattern.FindStringSubmatch(line); len(match) == 2 {
-		m.mu.Lock()
-		delete(m.players, match[1])
-		m.mu.Unlock()
-		m.notifyPlayers()
-	}
-}
-
-func (m *Manager) TempBan(name string, duration time.Duration) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return errors.New("nome de jogador vazio")
-	}
-	if err := m.SendCommand("ban " + name + " Banimento temporário de 3 dias"); err != nil {
-		return err
-	}
-	entry := BanEntry{Name: name, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(duration), Reason: "Banimento temporário de 3 dias"}
-	m.mu.Lock()
-	filtered := m.managedBans[:0]
-	for _, previous := range m.managedBans {
-		if !strings.EqualFold(previous.Name, name) {
-			filtered = append(filtered, previous)
-		}
-	}
-	m.managedBans = append(filtered, entry)
-	m.mu.Unlock()
-	if err := m.saveManagedBans(); err != nil {
-		m.Log("warning", "storage", "não foi possível persistir o banimento", err)
-	}
-	m.notifyPlayers()
-	return nil
-}
-
-func (m *Manager) Unban(entry BanEntry) error {
-	command := ""
-	if entry.Name != "" {
-		command = "pardon " + entry.Name
-	} else if entry.IP != "" {
-		command = "pardon-ip " + entry.IP
-	} else {
-		return errors.New("registro de banimento inválido")
-	}
-	if err := m.SendCommand(command); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	filtered := m.managedBans[:0]
-	for _, previous := range m.managedBans {
-		if !(strings.EqualFold(previous.Name, entry.Name) && previous.IP == entry.IP) {
-			filtered = append(filtered, previous)
-		}
-	}
-	m.managedBans = filtered
-	m.mu.Unlock()
-	if err := m.saveManagedBans(); err != nil {
-		m.Log("warning", "storage", "não foi possível persistir o desbanimento", err)
-	}
-	m.notifyPlayers()
-	return nil
-}
-
-func (m *Manager) banExpiryLoop(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticker.C:
-			m.mu.RLock()
-			bans := append([]BanEntry(nil), m.managedBans...)
-			running := m.serverCmd != nil
-			m.mu.RUnlock()
-			if !running {
-				continue
-			}
-			for _, entry := range bans {
-				if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
-					if err := m.Unban(entry); err != nil {
-						m.Log("error", "players", "falha ao encerrar banimento de "+entry.Name, err)
-					}
-				}
-			}
-		}
-	}
 }

@@ -46,13 +46,18 @@ O Pingu exige Java **25 ou superior** para iniciar o PaperMC.
 - Inicialização do PaperMC no primeiro pacote recebido.
 - Parada graciosa após 15 minutos sem jogadores ou tráfego.
 - Encerramento imediato dos proxies com cancelamento de contexto e fechamento dos sockets.
-- Downloads assíncronos de dependências com progresso e cancelamento.
+- Atualização transacional de Paper e plugins: todas as versões são resolvidas antes, os arquivos são baixados numa pasta temporária, conferidos por checksum (quando a fonte publica) e validados como JAR; se algo falhar, os arquivos anteriores continuam no lugar.
+- Os JARs substituídos ficam em `server/backups/jars-<data>` (os 3 mais recentes são mantidos).
+- Backup automático do mundo em ZIP (`server/backups/world-<de>-para-<para>-<data>.zip`) antes de trocar a versão do Minecraft.
+- Trocar a versão atualiza o conjunto inteiro (Paper + plugins), e plugins opcionais sem versão compatível são mantidos, nunca trocados por uma versão de outro Minecraft.
+- Aceite explícito da EULA do Minecraft antes do primeiro início.
+- Java iniciado sem janela de console separada e parada com prazo: se o Paper não encerrar em 90 s após `stop`, é finalizado à força e o motivo aparece no log.
 - Comandos de console, OP, kick, banimento temporário e pardon.
 - Catálogo bilíngue pesquisável que preenche a entrada do console sem executar automaticamente.
 - Dimensionamento conservador automático da memória JVM ou limite manual validado.
 - Visão operacional com identidade, endpoints, jogadores, memória configurada e tempo ativo.
 - Troca instantânea entre português do Brasil e inglês.
-- Buffer circular do console limitado a 2.500 entradas.
+- Buffer circular do console limitado a 2.500 entradas; a tela mostra as últimas 1.000 linhas.
 - Configurações persistidas em `server/config.json`.
 
 ## Iniciar, parar e conectar
@@ -63,6 +68,8 @@ O Pingu exige Java **25 ou superior** para iniciar o PaperMC.
 4. O processo Paper inicia no primeiro pacote Java/Bedrock recebido. Use **Parar Servidor** para salvar e encerrar corretamente ou **Reiniciar Servidor** para aplicar configurações como um novo limite de memória.
 
 O Pingu não cria um túnel público. Os endereços mostrados são endereços da rede local.
+
+Como o proxy do Pingu entrega todas as conexões ao Paper a partir de `127.0.0.1`, o Pingu ajusta `connection-throttle: 0` no `bukkit.yml`; caso contrário, o Paper recusaria quem entrasse logo depois de outro jogador. Pelo mesmo motivo, banimentos por IP não diferenciam jogadores — use banimento por nome.
 
 ## Gerenciamento de memória
 
@@ -153,6 +160,8 @@ go vet -buildvcs=false -tags ci ./...
 go test -race -buildvcs=false ./internal/commands ./internal/manager ./internal/proxy ./internal/api ./internal/i18n
 ```
 
+Os testes de ciclo de vida usam um "Java falso" em shell e rodam fora do Windows. Os testes de fumaça da interface são opcionais (`go test -tags guitest ./internal/gui`), porque o driver de teste do Fyne não é seguro para desenho concorrente.
+
 ## Verificar uma versão baixada
 
 Baixe o `SHA256SUMS.txt` junto do instalador ou ZIP portátil e execute:
@@ -182,6 +191,9 @@ O workflow obtém a versão `3.1.0` da tag, valida testes, vínculo estático e 
 - **Jogadores não conectam:** confirme que PLAY mostra os dois listeners como ON, use as portas exibidas e verifique o Firewall do Windows/redirecionamento do roteador.
 - **Um comando foi recusado:** confirme que o Paper está em execução e substitua cada `<parâmetro>` antes do envio.
 - **A configuração não foi aplicada:** reinicie o servidor Paper. Alterações de memória não modificam uma JVM já em execução.
+- **O log mostra `0xC000013A`:** a JVM recebeu um sinal de interrupção (Ctrl+C, logoff ou desligamento do Windows). A partir da 3.2 o Java não abre mais uma janela de console própria que pudesse ser fechada por engano.
+- **Uma atualização falhou:** nada foi trocado. Os JARs anteriores de atualizações concluídas ficam em `server/backups`.
+- **Preciso voltar o mundo para a versão anterior:** com o Pingu fechado, renomeie as pastas `world*` atuais e extraia o ZIP de `server/backups` na pasta `server`.
 
 ## Dados do usuário e rede
 
