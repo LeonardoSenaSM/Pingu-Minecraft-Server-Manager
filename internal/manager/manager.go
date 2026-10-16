@@ -49,7 +49,7 @@ type Manager struct {
 	ports         proxy.Ports
 	proc          *javaProcess
 	standbyOnExit bool
-	installed     string
+	installed     PaperInstallation
 	players       map[string]time.Time
 	knownPlayers  map[string]time.Time
 	managedBans   []BanEntry
@@ -226,6 +226,10 @@ func (m *Manager) SetSelectedVersion(version string) error {
 		return errors.New("versão vazia")
 	}
 	m.mu.Lock()
+	if m.settings.SelectedMinecraftVersion != version {
+		// A permissão para build de teste vale só para a versão confirmada.
+		m.settings.AllowExperimentalBuilds = false
+	}
 	m.settings.SelectedMinecraftVersion = version
 	m.mu.Unlock()
 	return nil
@@ -251,7 +255,7 @@ func (m *Manager) Status() Status {
 	if m.proc != nil {
 		started = m.proc.started
 	}
-	installed := m.installed
+	installed := m.installed.Label()
 	m.mu.RUnlock()
 	plan, planErr := BuildMemoryPlan(m.totalMemoryGB, settings.MemoryMode, settings.MemoryLimitGB)
 	if planErr != nil {

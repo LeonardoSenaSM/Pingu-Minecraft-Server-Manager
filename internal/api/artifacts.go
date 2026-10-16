@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync/atomic"
 )
@@ -52,6 +51,9 @@ type Artifact struct {
 	Version string
 	SHA256  string
 	SHA512  string
+	// Channel e Build só são preenchidos para o PaperMC.
+	Channel string
+	Build   int
 }
 
 type paperBuild struct {
@@ -66,34 +68,75 @@ type paperBuild struct {
 	} `json:"downloads"`
 }
 
-// latestStableBuild escolhe o build STABLE de maior ID, sem depender da ordem
-// em que a API devolve a lista.
-func latestStableBuild(builds []paperBuild) (paperBuild, bool) {
-	stable := make([]paperBuild, 0, len(builds))
-	for _, build := range builds {
-		if build.Channel != "STABLE" {
-			continue
-		}
-		if download, ok := build.Downloads["server:default"]; ok && download.URL != "" {
-			stable = append(stable, build)
-		}
-	}
-	if len(stable) == 0 {
-		return paperBuild{}, false
-	}
-	sort.Slice(stable, func(i, j int) bool { return stable[i].ID > stable[j].ID })
-	return stable[0], true
+// Canais de build do PaperMC, do mais confiável para o menos.
+const (
+	ChannelStable = "STABLE"
+	ChannelBeta   = "BETA"
+	ChannelAlpha  = "ALPHA"
+)
+
+// ExperimentalOnlyError indica que a versão escolhida ainda não tem build
+// STABLE no PaperMC, apenas builds de teste (BETA). Acontece nas primeiras
+// semanas após o lançamento de uma versão nova do Minecraft.
+type ExperimentalOnlyError struct {
+	Version string
+	Channel string
+	Build   int
 }
 
-// ResolvePaper encontra o build estável mais recente da versão escolhida. Com
-// LatestVersion, usa a versão de Minecraft mais nova que tenha build estável.
-func (c *Client) ResolvePaper(ctx context.Context, selected string) (Artifact, error) {
+func (e *ExperimentalOnlyError) Error() string {
+	return fmt.Sprintf("o PaperMC ainda não publicou build estável para o Minecraft %s; o mais recente é o build %d (%s)", e.Version, e.Build, strings.ToLower(e.Channel))
+}
+
+// newestBuild escolhe o build de maior ID no canal pedido, sem depender da
+// ordem em que a API devolve a lista.
+func newestBuild(builds []paperBuild, channel string) (paperBuild, bool) {
+	best, found := paperBuild{}, false
+	for _, build := range builds {
+		if !strings.EqualFold(build.Channel, channel) {
+			continue
+		}
+		if download, ok := build.Downloads["server:default"]; !ok || download.URL == "" {
+			continue
+		}
+		if !found || build.ID > best.ID {
+			best, found = build, true
+		}
+	}
+	return best, found
+}
+
+func latestStableBuild(builds []paperBuild) (paperBuild, bool) {
+	return newestBuild(builds, ChannelStable)
+}
+
+func paperArtifact(version string, build paperBuild) Artifact {
+	download := build.Downloads["server:default"]
+	return Artifact{
+		Name: "PaperMC", URL: download.URL, Version: version,
+		SHA256:  strings.ToLower(download.Checksums.SHA256),
+		Channel: strings.ToUpper(build.Channel), Build: build.ID,
+	}
+}
+
+// ResolvePaper encontra o build mais recente da versão escolhida, sempre
+// preferindo STABLE.
+//
+//   - Com LatestVersion ("Mais recente estável"), usa a versão de Minecraft
+//     mais nova que tenha build STABLE; nunca escolhe build de teste.
+//   - Com uma versão específica sem build STABLE, usa o BETA mais recente
+//     apenas se allowExperimental for true; senão devolve
+//     *ExperimentalOnlyError para a interface pedir confirmação.
+//
+// Builds ALPHA nunca são usados.
+func (c *Client) ResolvePaper(ctx context.Context, selected string, allowExperimental bool) (Artifact, error) {
 	versions, err := c.PaperVersions(ctx)
 	if err != nil {
 		return Artifact{}, err
 	}
 	versions = versions[1:]
-	if selected != "" && selected != LatestVersion {
+	explicit := selected != "" && selected != LatestVersion
+	if explicit {
 		found := false
 		for _, candidate := range versions {
 			if candidate == selected {
@@ -117,15 +160,23 @@ func (c *Client) ResolvePaper(ctx context.Context, selected string) (Artifact, e
 			lastErr = err
 			continue
 		}
-		build, ok := latestStableBuild(builds)
-		if !ok {
+		if build, ok := newestBuild(builds, ChannelStable); ok {
+			return paperArtifact(candidate, build), nil
+		}
+		if !explicit {
 			continue
 		}
-		download := build.Downloads["server:default"]
-		return Artifact{
-			Name: "PaperMC", URL: download.URL, Version: candidate,
-			SHA256: strings.ToLower(download.Checksums.SHA256),
-		}, nil
+		beta, ok := newestBuild(builds, ChannelBeta)
+		if !ok {
+			if alpha, hasAlpha := newestBuild(builds, ChannelAlpha); hasAlpha {
+				return Artifact{}, fmt.Errorf("o Minecraft %s ainda está em fase ALPHA no PaperMC (build %d); aguarde um build BETA ou STABLE", candidate, alpha.ID)
+			}
+			return Artifact{}, fmt.Errorf("o PaperMC não tem builds para o Minecraft %s", candidate)
+		}
+		if !allowExperimental {
+			return Artifact{}, &ExperimentalOnlyError{Version: candidate, Channel: ChannelBeta, Build: beta.ID}
+		}
+		return paperArtifact(candidate, beta), nil
 	}
 	if lastErr != nil {
 		return Artifact{}, fmt.Errorf("nenhum build estável do Paper foi encontrado: %w", lastErr)

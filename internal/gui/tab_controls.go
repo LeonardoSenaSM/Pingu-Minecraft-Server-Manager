@@ -132,12 +132,15 @@ func (t *controlsTab) onVersionSelected(display string) {
 func (t *controlsTab) applyVersion() {
 	u := t.u
 	u.runOperation(func(ctx context.Context) error { return u.manager.UpdatePaperVersion(ctx) }, func(err error) {
+		if err != nil && u.handleStartError(err, t.applyVersion) {
+			return
+		}
 		if err != nil {
 			u.showError("apply_failed", err)
 			return
 		}
 		u.refreshInstalledVersion()
-		u.showInfo("version_applied", "version_ready", u.manager.InstalledPaperVersion())
+		u.showInfo("version_applied", "version_ready", u.manager.InstalledPaper().Label())
 	})
 }
 

@@ -1,6 +1,10 @@
 package manager
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 const (
 	StateStopped  = "stopped"
@@ -16,11 +20,31 @@ type Settings struct {
 	MaxPlayers               int    `json:"max_players"`
 	MemoryMode               string `json:"memory_mode"`
 	MemoryLimitGB            int    `json:"memory_limit_gb,omitempty"`
+	// AllowExperimentalBuilds permite usar o build BETA do PaperMC quando a
+	// versão escolhida ainda não tem build STABLE. Só é ligado após
+	// confirmação explícita do usuário.
+	AllowExperimentalBuilds bool `json:"allow_experimental_builds,omitempty"`
 }
 
 type PaperInstallation struct {
 	Version      string    `json:"version"`
+	Channel      string    `json:"channel,omitempty"`
+	Build        int       `json:"build,omitempty"`
 	DownloadedAt time.Time `json:"downloaded_at"`
+}
+
+// Label descreve a instalação para a interface, ex.: "26.3 (beta, build 190)".
+func (p PaperInstallation) Label() string {
+	if p.Version == "" {
+		return ""
+	}
+	if p.Channel == "" || strings.EqualFold(p.Channel, "STABLE") {
+		if p.Build > 0 {
+			return fmt.Sprintf("%s (build %d)", p.Version, p.Build)
+		}
+		return p.Version
+	}
+	return fmt.Sprintf("%s (%s, build %d)", p.Version, strings.ToLower(p.Channel), p.Build)
 }
 
 type BanEntry struct {

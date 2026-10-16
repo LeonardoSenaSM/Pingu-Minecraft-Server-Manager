@@ -86,19 +86,33 @@ func (m *Manager) loadSettings() {
 func (m *Manager) InstalledPaperVersion() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.installed.Version
+}
+
+// InstalledPaper devolve versão, canal e build instalados.
+func (m *Manager) InstalledPaper() PaperInstallation {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.installed
 }
 
+// SetAllowExperimentalBuilds grava a permissão para usar builds BETA.
+func (m *Manager) SetAllowExperimentalBuilds(allow bool) error {
+	m.mu.Lock()
+	m.settings.AllowExperimentalBuilds = allow
+	m.mu.Unlock()
+	return m.SaveCurrentSettings()
+}
+
 func (m *Manager) reloadInstalledVersion() {
-	version := ""
+	var installation PaperInstallation
 	if data, err := os.ReadFile(m.paperInstallationPath()); err == nil {
-		var installation PaperInstallation
-		if json.Unmarshal(data, &installation) == nil {
-			version = installation.Version
+		if json.Unmarshal(data, &installation) != nil {
+			installation = PaperInstallation{}
 		}
 	}
 	m.mu.Lock()
-	m.installed = version
+	m.installed = installation
 	m.mu.Unlock()
 }
 
@@ -107,7 +121,7 @@ func (m *Manager) writeInstallation(installation PaperInstallation) error {
 		return err
 	}
 	m.mu.Lock()
-	m.installed = installation.Version
+	m.installed = installation
 	m.mu.Unlock()
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"mineserver/internal/api"
 	"mineserver/internal/i18n"
 	"mineserver/internal/manager"
 )
@@ -126,7 +127,7 @@ func (u *UI) applyStatus(status manager.Status) {
 // refreshInstalledVersion lê a versão instalada fora da UI e atualiza quem a
 // exibe.
 func (u *UI) refreshInstalledVersion() {
-	installed := u.manager.InstalledPaperVersion()
+	installed := u.manager.InstalledPaper().Label()
 	status := u.manager.Status()
 	u.do(func() {
 		u.installedVersion = installed
@@ -161,6 +162,40 @@ func (u *UI) confirmSensitive(command string, confirmed func()) {
 // sendCommand envia um comando em segundo plano e mostra erro se falhar.
 func (u *UI) sendCommand(errorKey, command string) {
 	u.runSimple(errorKey, func(context.Context) error { return u.manager.SendCommand(command) })
+}
+
+// handleStartError trata os erros que pedem uma decisão do usuário (EULA ou
+// build de teste). Retorna true se tratou.
+func (u *UI) handleStartError(err error, retry func()) bool {
+	return u.requireEULA(err, retry) || u.confirmExperimental(err, retry)
+}
+
+// confirmExperimental pergunta se o usuário aceita o build BETA do PaperMC
+// para uma versão que ainda não tem build estável.
+func (u *UI) confirmExperimental(err error, retry func()) bool {
+	var experimental *api.ExperimentalOnlyError
+	if !errors.As(err, &experimental) {
+		return false
+	}
+	u.do(func() {
+		message := widget.NewLabel(u.loc.T("experimental_message", experimental.Version, experimental.Build))
+		message.Wrapping = fyne.TextWrapWord
+		confirm := dialog.NewCustomConfirm(u.loc.T("experimental_title"), u.loc.T("experimental_accept"), u.loc.T("cancel"), message, func(accepted bool) {
+			if !accepted {
+				return
+			}
+			go func() {
+				if err := u.manager.SetAllowExperimentalBuilds(true); err != nil {
+					u.showError("settings_failed", err)
+					return
+				}
+				retry()
+			}()
+		}, u.window)
+		confirm.Resize(fyne.NewSize(560, 300))
+		confirm.Show()
+	})
+	return true
 }
 
 // requireEULA mostra o aceite da EULA quando a operação falhou por falta

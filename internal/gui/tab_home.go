@@ -59,7 +59,7 @@ func newHomeTab(u *UI) *homeTab {
 func (t *homeTab) play() {
 	u := t.u
 	u.runOperation(func(ctx context.Context) error { return u.manager.StartAll(ctx) }, func(err error) {
-		if err == nil || u.requireEULA(err, t.play) {
+		if err == nil || u.handleStartError(err, t.play) {
 			return
 		}
 		u.showError("start_failed", err)
@@ -69,6 +69,9 @@ func (t *homeTab) play() {
 func (t *homeTab) updateDependencies() {
 	u := t.u
 	u.runOperation(func(ctx context.Context) error { return u.manager.UpdateDependencies(ctx) }, func(err error) {
+		if err != nil && u.handleStartError(err, t.updateDependencies) {
+			return
+		}
 		if err != nil {
 			u.showError("update_failed", err)
 			return

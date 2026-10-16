@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -42,12 +43,14 @@ type fakeRepos struct {
 	geyserJar  []byte
 	brokenJar  atomic.Bool
 	modrinthOK atomic.Bool
+	channel    atomic.Value
 }
 
 func newFakeRepos(t *testing.T, version string) *fakeRepos {
 	t.Helper()
 	repos := &fakeRepos{geyserJar: testJar(t, "geyser")}
 	repos.modrinthOK.Store(true)
+	repos.channel.Store("STABLE")
 	paperJar := testJar(t, "paper")
 	paperSum := sha256.Sum256(paperJar)
 	floodgate := testJar(t, "floodgate")
@@ -57,8 +60,8 @@ func newFakeRepos(t *testing.T, version string) *fakeRepos {
 		fmt.Fprintf(w, `{"versions":{"x":[%q]}}`, version)
 	})
 	mux.HandleFunc("/paper/versions/"+version+"/builds", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `[{"id":7,"channel":"STABLE","downloads":{"server:default":{"url":%q,"checksums":{"sha256":%q}}}}]`,
-			repos.server.URL+"/files/paper.jar", hex.EncodeToString(paperSum[:]))
+		fmt.Fprintf(w, `[{"id":7,"channel":%q,"downloads":{"server:default":{"url":%q,"checksums":{"sha256":%q}}}}]`,
+			repos.channel.Load(), repos.server.URL+"/files/paper.jar", hex.EncodeToString(paperSum[:]))
 	})
 	mux.HandleFunc("/files/paper.jar", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(paperJar) })
 	for _, project := range []string{"geyser", "floodgate"} {
@@ -291,5 +294,40 @@ func TestInstallStagedRollsBackOnFailure(t *testing.T) {
 		if data, _ := os.ReadFile(path); string(data) != want {
 			t.Fatalf("%s = %q, esperado %q", path, data, want)
 		}
+	}
+}
+
+func TestBetaOnlyVersionRequiresConsent(t *testing.T) {
+	repos := newFakeRepos(t, "26.3")
+	repos.channel.Store("BETA")
+	m := managerWithRepos(t, repos)
+	if err := m.SetSelectedVersion("26.3"); err != nil {
+		t.Fatal(err)
+	}
+	err := m.UpdateDependencies(context.Background())
+	var experimental *api.ExperimentalOnlyError
+	if !errors.As(err, &experimental) {
+		t.Fatalf("esperado ExperimentalOnlyError, recebido %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(m.serverDir, "server.jar")); !os.IsNotExist(statErr) {
+		t.Fatal("nada pode ser instalado sem o consentimento")
+	}
+	if err := m.SetAllowExperimentalBuilds(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UpdateDependencies(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.InstalledPaper().Label(); got != "26.3 (beta, build 7)" {
+		t.Fatalf("rótulo da instalação = %q", got)
+	}
+	if !strings.Contains(m.LogText(), "build de teste") {
+		t.Fatal("o uso de build de teste deveria ser avisado no log")
+	}
+	if err := m.SetSelectedVersion("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	if m.Settings().AllowExperimentalBuilds {
+		t.Fatal("o consentimento deve valer só para a versão confirmada")
 	}
 }

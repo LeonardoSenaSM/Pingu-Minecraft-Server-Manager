@@ -107,9 +107,12 @@ func (m *Manager) UpdateDependencies(ctx context.Context) (result error) {
 	}
 
 	m.notifyProgress(Progress{Task: "PaperMC", TotalTasks: totalTasks, Indeterminate: true})
-	paper, err := m.api.ResolvePaper(ctx, m.SelectedVersion())
+	paper, err := m.api.ResolvePaper(ctx, m.SelectedVersion(), m.Settings().AllowExperimentalBuilds)
 	if err != nil {
 		return fmt.Errorf("localizar PaperMC: %w", err)
+	}
+	if paper.Channel != "" && paper.Channel != api.ChannelStable {
+		m.Log("warning", "dependencies", fmt.Sprintf("usando build de teste do PaperMC: Minecraft %s, build %d (%s). Faça backups com frequência; quando sair o build estável, use \"Atualizar dependências\"", paper.Version, paper.Build, paper.Channel), nil)
 	}
 	plan := []stagedFile{{dep: dependency{name: "PaperMC", relative: "server.jar"}, artifact: paper}}
 	for _, dep := range m.pluginDependencies() {
@@ -153,7 +156,7 @@ func (m *Manager) UpdateDependencies(ctx context.Context) (result error) {
 	if err := m.installStaged(plan); err != nil {
 		return err
 	}
-	if err := m.writeInstallation(PaperInstallation{Version: paper.Version, DownloadedAt: time.Now()}); err != nil {
+	if err := m.writeInstallation(PaperInstallation{Version: paper.Version, Channel: paper.Channel, Build: paper.Build, DownloadedAt: time.Now()}); err != nil {
 		return err
 	}
 	if err := m.configureGeyser(m.geyserPort(), m.paperPort()); err != nil {

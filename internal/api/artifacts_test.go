@@ -73,7 +73,7 @@ func TestResolvePaperPicksHighestStableBuild(t *testing.T) {
 	defer server.Close()
 	client := NewClient(time.Minute)
 	client.paperAPI = server.URL + "/paper"
-	artifact, err := client.ResolvePaper(context.Background(), LatestVersion)
+	artifact, err := client.ResolvePaper(context.Background(), LatestVersion, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,5 +131,64 @@ func TestDownloadRejectsCorruptJar(t *testing.T) {
 	}
 	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
 		t.Fatal("JAR inválido não deveria ser gravado")
+	}
+}
+
+func newChannelServer(t *testing.T) *Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/paper":
+			fmt.Fprint(w, `{"versions":{"26":["26.3","26.2"],"1.21":["1.21.10"]}}`)
+		case "/paper/versions/26.3/builds":
+			fmt.Fprint(w, `[{"id":190,"channel":"BETA","downloads":{"server:default":{"url":"https://x/263-190.jar"}}},
+			{"id":120,"channel":"ALPHA","downloads":{"server:default":{"url":"https://x/263-120.jar"}}}]`)
+		case "/paper/versions/26.2/builds":
+			fmt.Fprint(w, `[{"id":124,"channel":"STABLE","downloads":{"server:default":{"url":"https://x/262-124.jar"}}}]`)
+		case "/paper/versions/1.21.10/builds":
+			fmt.Fprint(w, `[{"id":130,"channel":"STABLE","downloads":{"server:default":{"url":"https://x/12110.jar"}}}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := NewClient(time.Minute)
+	client.paperAPI = server.URL + "/paper"
+	return client
+}
+
+func TestPaperVersionsOrderYearBasedVersionsFirst(t *testing.T) {
+	versions, err := newChannelServer(t).PaperVersions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(versions[1:], ","); got != "26.3,26.2,1.21.10" {
+		t.Fatalf("ordem das versões = %s", got)
+	}
+}
+
+func TestLatestStableSkipsVersionWithOnlyBeta(t *testing.T) {
+	artifact, err := newChannelServer(t).ResolvePaper(context.Background(), LatestVersion, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Version != "26.2" || artifact.Channel != ChannelStable {
+		t.Fatalf("\"mais recente estável\" escolheu %s %s", artifact.Version, artifact.Channel)
+	}
+}
+
+func TestExplicitBetaVersionNeedsConsent(t *testing.T) {
+	client := newChannelServer(t)
+	_, err := client.ResolvePaper(context.Background(), "26.3", false)
+	var experimental *ExperimentalOnlyError
+	if !errors.As(err, &experimental) || experimental.Version != "26.3" || experimental.Build != 190 {
+		t.Fatalf("esperado ExperimentalOnlyError para 26.3, recebido %v", err)
+	}
+	artifact, err := client.ResolvePaper(context.Background(), "26.3", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Channel != ChannelBeta || artifact.Build != 190 {
+		t.Fatalf("com consentimento deveria usar o BETA 190, recebido %+v", artifact)
 	}
 }
