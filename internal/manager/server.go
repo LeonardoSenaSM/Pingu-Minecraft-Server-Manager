@@ -253,6 +253,7 @@ func (m *Manager) StartServer(ctx context.Context) error {
 	cmd := exec.Command(javaPath, args...)
 	cmd.Dir = m.serverDir
 	cmd.Env = append(os.Environ(), "JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8")
+	configureChildProcess(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -325,7 +326,7 @@ func (m *Manager) StartServer(ctx context.Context) error {
 		m.mu.Unlock()
 		close(done)
 		if waitErr != nil {
-			m.Log("error", "paper", "processo encerrado com erro", waitErr)
+			m.Log("error", "paper", describeProcessExit(waitErr), waitErr)
 		} else {
 			m.Log("info", "paper", "servidor encerrado", nil)
 		}
@@ -384,7 +385,9 @@ func (m *Manager) findJavaExecutable() (string, int, error) {
 func inspectJavaFeature(javaPath string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, javaPath, "-version").CombinedOutput()
+	versionCmd := exec.CommandContext(ctx, javaPath, "-version")
+	configureChildProcess(versionCmd)
+	output, err := versionCmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return 0, errors.New("tempo limite ao verificar a versão")
 	}
